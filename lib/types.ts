@@ -77,7 +77,13 @@ export interface Ad {
 
 export type AgentName = "Supervisor" | "Presupuesto" | "Audiencias" | "Creativos" | "Analista" | "Estratega";
 
-export type AgentActionType = "increase_budget" | "decrease_budget" | "pause_campaign" | "pause_ad";
+export type AgentActionType =
+  | "increase_budget"
+  | "decrease_budget"
+  | "pause_campaign"
+  | "resume_campaign"
+  | "pause_ad"
+  | "resume_ad";
 
 export type AgentActionStatus =
   | "recommended"
@@ -102,7 +108,10 @@ export interface AgentAction {
   toBudget?: number;
   reason: string;
   impact: string;
-  source: "rules" | "ai";
+  /** "user" marks changes a person made through Pulso; agents never undo those. */
+  source: "rules" | "ai" | "user";
+  /** Why a status change happened; decides whether Pulso may undo it later. */
+  trigger?: "limit" | "fatigue" | "no_results" | "ai" | "manual";
   status: AgentActionStatus;
   /** Why a guardrail stopped the action. */
   guardrail?: string;

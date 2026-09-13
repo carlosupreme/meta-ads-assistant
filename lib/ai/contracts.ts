@@ -25,7 +25,7 @@ export interface AiRecommendation {
 
 /** A concrete change suggested by the model. It is never executed without passing the guardrails. */
 export interface AiActionProposal {
-  type: AgentActionType;
+  type: Exclude<AgentActionType, "resume_campaign" | "resume_ad">;
   campaignId: string;
   adId?: string;
   /** Percent change for budget actions, between -20 and 20. */

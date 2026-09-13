@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  actionsFromAi, checkGuardrails, commitAgentRun, planRuleActions, projectedMonthSpend, resolveProposals,
+  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, planRuleActions, projectedMonthSpend, resolveProposals,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -161,5 +161,52 @@ describe("resolution", () => {
     assert.equal(next.campaigns[0].dailyBudget, 1_150);
     assert.equal(next.budgetChanges.length, 1);
     assert.equal(next.actions.find((action) => action.id === "old")?.status, "expired");
+  });
+});
+
+describe("resume", () => {
+  const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000).toISOString();
+  const pause = (overrides: Partial<AgentAction>): AgentAction => budgetAction({
+    type: "pause_campaign", agent: "Supervisor", trigger: "limit", status: "executed", fromBudget: undefined, toBudget: undefined, ...overrides,
+  });
+
+  it("allows resuming a paused campaign only while the month has room", () => {
+    const action = budgetAction({ type: "resume_campaign", fromBudget: undefined, toBudget: undefined });
+    const paused = [campaign({ status: "PAUSED" })];
+    assert.equal(checkGuardrails(action, context({ campaigns: paused })).allowed, true);
+    // 10,000 + 1,000 × 18 = 28,000 > 25,000.
+    assert.equal(checkGuardrails(action, context({ campaigns: paused, organization: organization({ monthlyLimit: 25_000 }) })).allowed, false);
+    assert.equal(checkGuardrails(action, context()).allowed, false, "an active campaign cannot be resumed");
+  });
+
+  it("resumes campaigns paused by the monthly limit once a new month starts", () => {
+    const campaigns = [campaign({ status: "PAUSED" })];
+    const lastMonth = planRuleActions(workspace({ campaigns, actions: [pause({ createdAt: daysAgo(14), resolvedAt: daysAgo(14) })] }), organization(), now);
+    assert.ok(lastMonth.some((action) => action.type === "resume_campaign" && action.campaignId === "c1"));
+    const thisMonth = planRuleActions(workspace({ campaigns, actions: [pause({ createdAt: daysAgo(2), resolvedAt: daysAgo(2) })] }), organization(), now);
+    assert.ok(thisMonth.every((action) => action.type !== "resume_campaign"));
+  });
+
+  it("never undoes a pause made by the user", () => {
+    const campaigns = [campaign({ status: "PAUSED" })];
+    const actions = [
+      pause({ id: "user", source: "user", trigger: "manual", createdAt: daysAgo(10), resolvedAt: daysAgo(10) }),
+      pause({ id: "agent", createdAt: daysAgo(20), resolvedAt: daysAgo(20) }),
+    ];
+    assert.ok(planRuleActions(workspace({ campaigns, actions }), organization(), now).every((action) => action.type !== "resume_campaign"));
+  });
+
+  it("gives fatigued ads a seven-day rest before resuming them", () => {
+    const ads = [ad({ id: "rested", status: "PAUSED" }), ad({ id: "active" })];
+    const adPause = (days: number) => pause({ type: "pause_ad", agent: "Creativos", trigger: "fatigue", adId: "rested", createdAt: daysAgo(days), resolvedAt: daysAgo(days) });
+    assert.ok(planRuleActions(workspace({ ads, actions: [adPause(8)] }), organization(), now).some((action) => action.type === "resume_ad" && action.adId === "rested"));
+    assert.ok(planRuleActions(workspace({ ads, actions: [adPause(3)] }), organization(), now).every((action) => action.type !== "resume_ad"));
+  });
+
+  it("applies a resume and records it as the latest status change", () => {
+    const resumed = budgetAction({ id: "resume", type: "resume_campaign", status: "executed", fromBudget: undefined, toBudget: undefined, createdAt: daysAgo(0) });
+    const next = commitAgentRun(workspace({ campaigns: [campaign({ status: "PAUSED" })], actions: [pause({ createdAt: daysAgo(5) })] }), { actions: [resumed], insights: [] }, now);
+    assert.equal(next.campaigns[0].status, "ACTIVE");
+    assert.equal(lastStatusChanges(next.actions).get("campaign:c1")?.id, "resume");
   });
 });

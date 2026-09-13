@@ -11,10 +11,10 @@ import {
 import type { AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
-import { accountHealth, describeAction, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
+import { accountHealth, describeAction, lastStatusChanges, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 
-type Decision = "approve" | "reject";
+type Decision = "approve" | "reject" | "resume";
 
 async function fetchAiStatus(): Promise<{ status: AiStatus; models: string[] } | null> {
   try {
@@ -455,7 +455,7 @@ function AgentsView({ organization, activities, actions, decidingId, onDecide, r
   };
   return <div className="page-stack">
     <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
-    <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions}/></div>
+    <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions} decidingId={decidingId} onDecide={onDecide}/></div>
     <AiAssistantPanel organization={organization} status={aiStatus}/>
     <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className="live-label"><i/> 6 OPERANDO</span></div>
     <div className="agents-grid">{Object.entries(agentMeta).map(([name, meta]) => { const Icon = meta.icon; const last = actions.find((action) => action.agent === name); return <div className="agent-card" key={name}><div className="agent-card-top"><span className={`agent-big-icon ${meta.color}`}><Icon size={21}/></span><span className="agent-status"><i/> ACTIVO</span></div><h3>{name}</h3><p>{meta.description}</p><div className="agent-stat"><span>Última decisión</span><b suppressHydrationWarning>{last ? timeAgo(last.createdAt) : "Sin decisiones"}</b></div><button>Ver decisiones <ChevronRight size={14}/></button></div>; })}</div>
@@ -485,14 +485,22 @@ function ApprovalsPanel({ actions, decidingId, onDecide }: { actions: AgentActio
   </div>;
 }
 
-function ActionLog({ actions }: { actions: AgentAction[] }) {
+function ActionLog({ actions, decidingId, onDecide }: { actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void }) {
   const history = actions.filter((action) => action.status !== "pending").slice(0, 20);
+  const latestStatus = lastStatusChanges(actions);
+  // Only the pause that is still in effect for its campaign or ad can be undone.
+  const canResume = (action: AgentAction) => action.status === "executed"
+    && (action.type === "pause_campaign" || action.type === "pause_ad")
+    && latestStatus.get(action.type === "pause_ad" ? `ad:${action.adId}` : `campaign:${action.campaignId}`)?.id === action.id;
   return <div className="panel action-log-panel">
     <PanelHeader title="Registro de cambios" subtitle="Cada decisión con su razón y resultado"/>
     {history.length ? <div className="action-log">{history.map((action) => <div className="action-log-row" key={action.id}>
       <span className={`status-badge ${ACTION_STATUS[action.status].badge}`}><i/>{ACTION_STATUS[action.status].label}</span>
       <div><strong>{capitalize(describeAction(action))}</strong><p>{action.reason}</p>{(action.guardrail || action.error) && <p className="guardrail-note">{action.guardrail || action.error}</p>}</div>
-      <small suppressHydrationWarning>{timeAgo(action.resolvedAt || action.createdAt)}</small>
+      <div className="action-log-side">
+        <small suppressHydrationWarning>{timeAgo(action.resolvedAt || action.createdAt)}</small>
+        {canResume(action) && <button className="text-button" disabled={Boolean(decidingId)} onClick={() => onDecide(action.id, "resume")}>{decidingId === action.id ? <LoaderCircle className="spin" size={13}/> : <Play size={13}/>} Reactivar</button>}
+      </div>
     </div>)}</div> : <div className="empty-panel"><Activity size={22}/><b>Sin cambios registrados</b><span>Ejecuta un análisis para ver las decisiones.</span></div>}
   </div>;
 }

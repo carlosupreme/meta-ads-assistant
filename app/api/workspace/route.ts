@@ -71,7 +71,29 @@ export async function PATCH(request: Request) {
     }
     if (input.action === "ai-model") current.aiModel = input.model;
     if (input.action === "alert-read") current.alerts = current.alerts.map((alert) => alert.id === input.alertId ? { ...alert, read: true } : alert);
-    if (input.action === "campaign-status") current.campaigns = current.campaigns.map((campaign) => campaign.id === input.campaignId ? { ...campaign, status: input.status, updatedAt: "Ahora" } : campaign);
+    if (input.action === "campaign-status") {
+      const campaign = current.campaigns.find((item) => item.id === input.campaignId);
+      current.campaigns = current.campaigns.map((item) => item.id === input.campaignId ? { ...item, status: input.status, updatedAt: "Ahora" } : item);
+      if (campaign) {
+        // Recorded as a user change so the agents never undo it on their own.
+        const at = new Date().toISOString();
+        current.actions = [{
+          id: `action-${globalThis.crypto.randomUUID()}`,
+          organizationId: campaign.organizationId,
+          agent: "Supervisor",
+          type: input.status === "PAUSED" ? "pause_campaign" : "resume_campaign",
+          campaignId: campaign.id,
+          campaignName: campaign.name,
+          reason: input.status === "PAUSED" ? "Pausada manualmente desde Pulso." : "Reactivada manualmente desde Pulso.",
+          impact: "Cambio manual",
+          source: "user",
+          trigger: "manual",
+          status: "executed",
+          createdAt: at,
+          resolvedAt: at,
+        } as const, ...current.actions].slice(0, 300);
+      }
+    }
     return current;
   });
   return NextResponse.json(toSafeWorkspace(workspace));

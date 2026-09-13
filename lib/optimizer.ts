@@ -15,6 +15,7 @@ export const GUARDRAILS = {
   fatigueCtrRatio: 0.7,
   fatigueMinImpressions: 1000,
   scaleStep: 0.15,
+  fatigueRestDays: 7,
 } as const;
 
 const HOUR_MS = 3_600_000;
@@ -79,6 +80,23 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
   const campaign = campaigns.find((item) => item.id === action.campaignId && item.organizationId === organization.id);
   if (!campaign) return block("La campaña ya no existe en la cuenta sincronizada.");
 
+  if (action.type === "resume_campaign") {
+    if (campaign.status !== "PAUSED") return block("La campaña no está pausada.");
+    if (organization.spentThisMonth >= organization.monthlyLimit) return block("El gasto del mes ya alcanzó el límite; la campaña sigue pausada.");
+    const projected = projectedMonthSpend(organization, campaigns, now) + campaign.dailyBudget * daysLeftInMonth(now);
+    if (projected > organization.monthlyLimit) {
+      return block(`Reactivarla llevaría el gasto proyectado a ${formatMoney(projected)}, por encima del límite de ${formatMoney(organization.monthlyLimit)}.`);
+    }
+    return allow;
+  }
+
+  if (action.type === "resume_ad") {
+    const ad = ads.find((item) => item.id === action.adId && item.campaignId === campaign.id);
+    if (!ad || ad.status !== "PAUSED") return block("El anuncio no está pausado.");
+    if (campaign.status !== "ACTIVE") return block("La campaña del anuncio está pausada; reactívala primero.");
+    return allow;
+  }
+
   if (action.type === "pause_campaign") {
     return campaign.status === "ACTIVE" ? allow : block("La campaña ya no está activa.");
   }
@@ -118,14 +136,16 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
 
 /** Applies the local effect of an executed action. */
 export function applyAction<T extends OptimizationState>(state: T, action: AgentAction, now: Date): T {
-  if (action.type === "pause_ad") {
-    return { ...state, ads: state.ads.map((ad) => ad.id === action.adId ? { ...ad, status: "PAUSED" as const } : ad) };
+  if (action.type === "pause_ad" || action.type === "resume_ad") {
+    const status = action.type === "pause_ad" ? "PAUSED" as const : "ACTIVE" as const;
+    return { ...state, ads: state.ads.map((ad) => ad.id === action.adId ? { ...ad, status } : ad) };
   }
-  if (action.type === "pause_campaign") {
+  if (action.type === "pause_campaign" || action.type === "resume_campaign") {
+    const status = action.type === "pause_campaign" ? "PAUSED" as const : "ACTIVE" as const;
     return {
       ...state,
       campaigns: state.campaigns.map((campaign) => campaign.id === action.campaignId
-        ? { ...campaign, status: "PAUSED" as const, updatedAt: "Ahora" }
+        ? { ...campaign, status, updatedAt: "Ahora" }
         : campaign),
     };
   }
@@ -159,7 +179,22 @@ const median = (values: number[]) => {
 const isMature = (campaign: Campaign) => campaign.dailyBudget > 0 ? campaign.spend >= campaign.dailyBudget * 2 : campaign.spend > 0;
 const hasManagedBudget = (campaign: Campaign) => (campaign.budgetLevel ?? "campaign") !== "none" && campaign.dailyBudget > 0;
 const actionKey = (action: Pick<AgentAction, "type" | "campaignId" | "adId">) =>
-  action.type === "pause_ad" ? `ad:${action.adId}` : `campaign:${action.campaignId}`;
+  action.type === "pause_ad" || action.type === "resume_ad" ? `ad:${action.adId}` : `campaign:${action.campaignId}`;
+
+const STATUS_ACTIONS = new Set<AgentActionType>(["pause_campaign", "resume_campaign", "pause_ad", "resume_ad"]);
+
+/** Latest executed status change per campaign or ad (`campaign:<id>` / `ad:<id>`), by agents or the user. */
+export function lastStatusChanges(actions: AgentAction[]): Map<string, AgentAction> {
+  const latest = new Map<string, AgentAction>();
+  const at = (action: AgentAction) => Date.parse(action.resolvedAt ?? action.createdAt);
+  for (const action of actions) {
+    if (action.status !== "executed" || !STATUS_ACTIONS.has(action.type)) continue;
+    const key = actionKey(action);
+    const current = latest.get(key);
+    if (!current || at(action) > at(current)) latest.set(key, action);
+  }
+  return latest;
+}
 
 type ProposalFields = Omit<AgentAction, "id" | "organizationId" | "status" | "createdAt" | "source">;
 
@@ -169,8 +204,10 @@ export function planRuleActions(
   organization: Organization,
   now: Date,
 ): AgentAction[] {
-  const campaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id && campaign.status === "ACTIVE");
-  if (!campaigns.length) return [];
+  const orgCampaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id);
+  // Accounts whose campaigns are all paused are still planned: they may be due for a resume.
+  if (!orgCampaigns.length) return [];
+  const campaigns = orgCampaigns.filter((campaign) => campaign.status === "ACTIVE");
   const make = (fields: ProposalFields): AgentAction => ({
     id: newId("action"), organizationId: organization.id, status: "recommended", createdAt: now.toISOString(), source: "rules", ...fields,
   });
@@ -180,7 +217,7 @@ export function planRuleActions(
 
   if (organization.spentThisMonth >= organization.monthlyLimit) {
     return campaigns.filter((campaign) => !busy.has(`campaign:${campaign.id}`)).map((campaign) => make({
-      agent: "Supervisor", type: "pause_campaign", campaignId: campaign.id, campaignName: campaign.name,
+      agent: "Supervisor", type: "pause_campaign", trigger: "limit", campaignId: campaign.id, campaignName: campaign.name,
       reason: `El gasto del mes (${formatMoney(organization.spentThisMonth)}) alcanzó el límite de ${formatMoney(organization.monthlyLimit)}.`,
       impact: "Protección de presupuesto",
     }));
@@ -218,11 +255,44 @@ export function planRuleActions(
     excessPerDay -= campaign.dailyBudget - toBudget;
   }
 
+  // Restore what the agents paused once the reason is gone. Pauses made by the user are never undone.
+  const restorative: AgentAction[] = [];
+  const latestStatus = lastStatusChanges(workspace.actions);
+  const pausedByAgents = (key: string, trigger: NonNullable<AgentAction["trigger"]>) => {
+    const last = latestStatus.get(key);
+    return last && last.source !== "user" && last.trigger === trigger && (last.type === "pause_campaign" || last.type === "pause_ad") ? last : undefined;
+  };
+  const pausedAt = (action: AgentAction) => Date.parse(action.resolvedAt ?? action.createdAt);
+  if (initialExcessPerDay <= 0) {
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    for (const campaign of orgCampaigns.filter((item) => item.status === "PAUSED")) {
+      const pause = pausedByAgents(`campaign:${campaign.id}`, "limit");
+      if (!pause || busy.has(`campaign:${campaign.id}`) || pausedAt(pause) >= monthStart) continue;
+      restorative.push(make({
+        agent: "Supervisor", type: "resume_campaign", trigger: "limit", campaignId: campaign.id, campaignName: campaign.name,
+        reason: "Pulso la pausó el mes pasado al alcanzar el límite mensual; empezó un mes nuevo y hay presupuesto disponible.",
+        impact: `Reanuda ${formatMoney(campaign.dailyBudget)}/día dentro del límite de ${formatMoney(organization.monthlyLimit)}`,
+      }));
+    }
+    for (const ad of workspace.ads.filter((item) => item.organizationId === organization.id && item.status === "PAUSED")) {
+      const pause = pausedByAgents(`ad:${ad.id}`, "fatigue");
+      const campaign = campaigns.find((item) => item.id === ad.campaignId);
+      if (!pause || !campaign || busy.has(`ad:${ad.id}`)) continue;
+      const restedDays = (now.getTime() - pausedAt(pause)) / 86_400_000;
+      if (restedDays < GUARDRAILS.fatigueRestDays) continue;
+      optional.push(make({
+        agent: "Creativos", type: "resume_ad", trigger: "fatigue", campaignId: campaign.id, campaignName: campaign.name, adId: ad.id, adName: ad.name,
+        reason: `Lleva ${Math.floor(restedDays)} días en pausa por fatiga; la audiencia ya descansó de este anuncio.`,
+        impact: "Vuelve a rotar junto con los anuncios activos",
+      }));
+    }
+  }
+
   // Waste: more than three days of budget without a single result.
   for (const campaign of campaigns) {
     if (!available(campaign) || campaign.results > 0 || campaign.dailyBudget <= 0 || campaign.spend < campaign.dailyBudget * 3) continue;
     optional.push(make({
-      agent: "Analista", type: "pause_campaign", campaignId: campaign.id, campaignName: campaign.name,
+      agent: "Analista", type: "pause_campaign", trigger: "no_results", campaignId: campaign.id, campaignName: campaign.name,
       reason: `Gastó ${formatMoney(campaign.spend)} (más de tres días de presupuesto) sin registrar resultados.`,
       impact: `Evita ${formatMoney(campaign.dailyBudget)} diarios sin retorno`,
     }));
@@ -262,13 +332,13 @@ export function planRuleActions(
       const base = { type: "pause_ad" as const, campaignId: campaign.id, campaignName: campaign.name, adId: ad.id, adName: ad.name };
       if (ad.frequency >= GUARDRAILS.fatigueFrequency && ad.impressions >= GUARDRAILS.fatigueMinImpressions && ad.ctr < medianCtr * GUARDRAILS.fatigueCtrRatio) {
         optional.push(make({
-          ...base, agent: "Creativos",
+          ...base, agent: "Creativos", trigger: "fatigue",
           reason: `Frecuencia de ${ad.frequency.toFixed(1)} y CTR de ${ad.ctr.toFixed(2)}% frente a ${medianCtr.toFixed(2)}% de los demás anuncios: señales de fatiga.`,
           impact: "El presupuesto se concentra en los anuncios vigentes",
         }));
       } else if (ad.results === 0 && ads.some((other) => other.id !== ad.id && other.results > 0) && ad.spend >= Math.max(campaignCpa * 2, campaign.dailyBudget)) {
         optional.push(make({
-          ...base, agent: "Analista",
+          ...base, agent: "Analista", trigger: "no_results",
           reason: `Gastó ${formatMoney(ad.spend)} sin resultados mientras otros anuncios de la campaña sí convierten.`,
           impact: `Recupera hasta ${formatMoney(ad.spend)} por semana`,
         }));
@@ -298,7 +368,7 @@ export function planRuleActions(
     }
   }
 
-  return [...protective, ...optional.slice(0, GUARDRAILS.maxActionsPerRun)];
+  return [...protective, ...restorative, ...optional.slice(0, GUARDRAILS.maxActionsPerRun)];
 }
 
 /** Converts AI proposals into actions. Unknown campaigns or ads are dropped; guardrails still apply later. */
@@ -370,7 +440,9 @@ export function describeAction(action: Pick<AgentAction, "type" | "campaignName"
     increase_budget: `subir el presupuesto de ${action.campaignName}${budgets}`,
     decrease_budget: `bajar el presupuesto de ${action.campaignName}${budgets}`,
     pause_campaign: `pausar la campaña ${action.campaignName}`,
+    resume_campaign: `reactivar la campaña ${action.campaignName}`,
     pause_ad: `pausar el anuncio ${action.adName} de ${action.campaignName}`,
+    resume_ad: `reactivar el anuncio ${action.adName} de ${action.campaignName}`,
   };
   return descriptions[action.type];
 }
@@ -380,7 +452,9 @@ function executedTitle(action: AgentAction): string {
     increase_budget: `Subí el presupuesto de ${action.campaignName} a ${formatMoney(action.toBudget ?? 0)}/día`,
     decrease_budget: `Bajé el presupuesto de ${action.campaignName} a ${formatMoney(action.toBudget ?? 0)}/día`,
     pause_campaign: `Pausé la campaña ${action.campaignName}`,
+    resume_campaign: `Reactivé la campaña ${action.campaignName}`,
     pause_ad: `Pausé el anuncio ${action.adName}`,
+    resume_ad: `Reactivé el anuncio ${action.adName}`,
   };
   return titles[action.type];
 }

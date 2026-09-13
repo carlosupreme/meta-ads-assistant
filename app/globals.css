@@ -258,6 +258,7 @@ a { color: inherit; text-decoration: none; }
 .action-log-panel { max-height: 380px; overflow-y: auto; }
 .action-log-row { padding: 10px 0; border-top: 1px solid #eeeef2; display: grid; grid-template-columns: 78px minmax(0, 1fr) auto; align-items: start; gap: 10px; }
 .action-log-row .guardrail-note { color: #b8443e; }
+.action-log-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .action-log-row small { color: #b0b0b8; font-size: 11px; white-space: nowrap; }
 
 .sign-out { width: 26px; height: 26px; border-radius: 7px; color: #77767f; background: transparent; display: grid; place-items: center; }

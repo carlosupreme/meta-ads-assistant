@@ -111,6 +111,10 @@ Reglas del planeador:
 | Anuncio con frecuencia ≥ 4 y CTR < 70% de la mediana | Pausa el anuncio (fatiga) |
 | Anuncio sin resultados que gastó más que su campaña en un día mientras otros convierten | Pausa el anuncio |
 | ROAS ≥ 120% de la meta, tendencia estable y margen en el límite | Aumenta hasta 15% |
+| Campaña que Pulso pausó por el límite mensual, en un mes nuevo con margen | La reactiva |
+| Anuncio que Pulso pausó por fatiga hace 7 días o más, con su campaña activa | Lo reactiva |
+
+Pulso solo deshace pausas propias: nunca reactiva lo que pausaste tú (desde Pulso o desde Meta) ni las pausas por falta de resultados, que no generan datos nuevos mientras están detenidas. Cualquier pausa vigente se puede reactivar con **Reactivar** en el registro de cambios, siempre sujeta a los guardrails.
 
 Guardrails obligatorios:
 

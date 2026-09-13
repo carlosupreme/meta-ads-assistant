@@ -24,10 +24,10 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
 
   for (const organization of organizations) {
     const campaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id);
-    if (!campaigns.some((campaign) => campaign.status === "ACTIVE")) continue;
+    if (!campaigns.length) continue;
     const proposals = planRuleActions(workspace, organization, now);
 
-    if (aiModel) {
+    if (aiModel && campaigns.some((campaign) => campaign.status === "ACTIVE")) {
       try {
         const ads = workspace.ads.filter((ad) => ad.organizationId === organization.id);
         const analysis = await analyzeCampaigns(aiModel, buildAiContext(organization, campaigns, ads, proposals));
@@ -83,6 +83,13 @@ async function pushActionToMeta(workspace: WorkspaceData, action: AgentAction): 
   }
   if (action.type === "pause_campaign") {
     return updateMetaObject(encryptedAccessToken, action.campaignId, { status: "PAUSED" });
+  }
+  if (action.type === "resume_ad") {
+    if (!action.adId) throw new Error("Falta el anuncio a reactivar");
+    return updateMetaObject(encryptedAccessToken, action.adId, { status: "ACTIVE" });
+  }
+  if (action.type === "resume_campaign") {
+    return updateMetaObject(encryptedAccessToken, action.campaignId, { status: "ACTIVE" });
   }
 
   const campaign = workspace.campaigns.find((item) => item.id === action.campaignId);
