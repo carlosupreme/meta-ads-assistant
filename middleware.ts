@@ -1,24 +1,21 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { authMode, supabaseAuthConfig } from "@/lib/supabase/config";
+import { isSupabaseConfigured, supabaseAuthConfig } from "@/lib/supabase/config";
 
 // The cron authenticates with CRON_SECRET; login and email confirmation must work signed out.
 const PUBLIC_PREFIXES = ["/login", "/auth/", "/api/cron/"];
 
 export async function middleware(request: NextRequest) {
-  const mode = authMode();
-  if (mode === "local") return NextResponse.next();
-
   const { pathname } = request.nextUrl;
   const isApi = pathname.startsWith("/api/");
   const isPublic = PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
   const config = supabaseAuthConfig();
 
-  if (mode === "misconfigured" || !config) {
+  if (!isSupabaseConfigured() || !config) {
     if (isPublic) return NextResponse.next();
     return isApi
-      ? NextResponse.json({ error: "La autenticación no está configurada en el servidor." }, { status: 503 })
-      : new NextResponse("Pulso requiere Supabase Auth en producción. Revisa las variables de entorno.", { status: 503 });
+      ? NextResponse.json({ error: "Supabase no está configurado en el servidor." }, { status: 503 })
+      : new NextResponse("Pulso requiere Supabase. Revisa las variables de entorno.", { status: 503 });
   }
 
   let response = NextResponse.next({ request });

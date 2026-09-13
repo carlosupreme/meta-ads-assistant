@@ -6,7 +6,7 @@ export interface Database {
       pulso_workspaces: {
         Row: {
           id: string;
-          owner_id: string | null;
+          owner_id: string;
           name: string;
           payload: Json;
           version: number;
@@ -15,7 +15,7 @@ export interface Database {
         };
         Insert: {
           id?: string;
-          owner_id?: string | null;
+          owner_id: string;
           name?: string;
           payload?: Json;
           version?: number;
@@ -23,7 +23,7 @@ export interface Database {
           updated_at?: string;
         };
         Update: {
-          owner_id?: string | null;
+          owner_id?: string;
           name?: string;
           payload?: Json;
           version?: number;

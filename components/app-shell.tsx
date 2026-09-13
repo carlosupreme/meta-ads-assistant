@@ -88,7 +88,7 @@ const agentMeta = {
   Creativos: { icon: WandSparkles, color: "pink", description: "Produce y prueba variantes de anuncios." },
 } as const;
 
-export function AppShell({ initialData, account }: { initialData: SafeWorkspace; account: { name: string; email: string } | null }) {
+export function AppShell({ initialData, account }: { initialData: SafeWorkspace; account: { name: string; email: string } }) {
   const [data, setData] = useState(initialData);
   const [view, setView] = useState<NavView>("dashboard");
   const [organizationId, setOrganizationId] = useState(initialData.organizations[0]?.id || "");
@@ -256,11 +256,9 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
           <button onClick={() => setView("agents")}>Ver actividad <ChevronRight size={14} /></button>
         </div>
         <div className="user-card">
-          <div className="user-avatar">{(account?.name || data.user.name).split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase()}</div>
-          <span><b>{account?.name || data.user.name}</b><small>{account?.email || data.user.email}</small></span>
-          {account
-            ? <form action="/auth/signout" method="post"><button className="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión"><LogOut size={16} /></button></form>
-            : <MoreHorizontal size={18} />}
+          <div className="user-avatar">{account.name.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase()}</div>
+          <span><b>{account.name}</b><small>{account.email}</small></span>
+          <form action="/auth/signout" method="post"><button className="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión"><LogOut size={16} /></button></form>
         </div>
       </aside>
 

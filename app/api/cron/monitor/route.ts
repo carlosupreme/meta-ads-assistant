@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { runAgentEngine } from "@/lib/agent-engine";
 import { mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
 import { commitAgentRun } from "@/lib/optimizer";
-import { AgentBusyError, ensureSingleUserWorkspace, listOwnedWorkspaceIds, updateWorkspace, withAgentLock } from "@/lib/store";
-import { authMode } from "@/lib/supabase/config";
+import { AgentBusyError, listWorkspaceIds, updateWorkspace, withAgentLock } from "@/lib/store";
 
 export const maxDuration = 300;
 
@@ -31,7 +30,7 @@ async function monitorWorkspace(workspaceId: string) {
 export async function GET(request: Request) {
   if (!authorized(request)) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   try {
-    const workspaceIds = authMode() === "supabase" ? await listOwnedWorkspaceIds() : [await ensureSingleUserWorkspace()];
+    const workspaceIds = await listWorkspaceIds();
     let executed = 0;
     let pending = 0;
     let skipped = 0;

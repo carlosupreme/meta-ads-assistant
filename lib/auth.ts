@@ -1,20 +1,16 @@
 import { NextResponse } from "next/server";
-import { authMode } from "./supabase/config";
+import { isSupabaseConfigured } from "./supabase/config";
 import { createSupabaseServerClient } from "./supabase/server";
-import { ensureSingleUserWorkspace, findOrCreateWorkspace, type WorkspaceOwner } from "./store";
+import { findOrCreateWorkspace, type WorkspaceOwner } from "./store";
 
 export interface WorkspaceSession {
   workspaceId: string;
-  /** Null in local single-user development mode. */
-  user: WorkspaceOwner | null;
+  user: WorkspaceOwner;
 }
 
 /** Resolves the workspace for the current request from the verified Supabase session. */
 export async function getWorkspaceSession(): Promise<WorkspaceSession | null> {
-  const mode = authMode();
-  if (mode === "misconfigured") return null;
-  if (mode === "local") return { workspaceId: await ensureSingleUserWorkspace(), user: null };
-
+  if (!isSupabaseConfigured()) return null;
   const supabase = await createSupabaseServerClient();
   // getClaims verifies the JWT signature; getSession alone would trust the cookie.
   const { data, error } = await supabase.auth.getClaims();
@@ -31,7 +27,7 @@ export async function getWorkspaceSession(): Promise<WorkspaceSession | null> {
 export async function requireApiSession(): Promise<WorkspaceSession | NextResponse> {
   const session = await getWorkspaceSession();
   if (session) return session;
-  return authMode() === "misconfigured"
-    ? NextResponse.json({ error: "La autenticación no está configurada en el servidor." }, { status: 503 })
-    : NextResponse.json({ error: "Inicia sesión para continuar." }, { status: 401 });
+  return isSupabaseConfigured()
+    ? NextResponse.json({ error: "Inicia sesión para continuar." }, { status: 401 })
+    : NextResponse.json({ error: "Supabase no está configurado en el servidor." }, { status: 503 });
 }

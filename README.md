@@ -1,23 +1,25 @@
 # Pulso AI
 
-MVP web desktop para monitorear y optimizar Facebook e Instagram Ads con agentes autónomos. Está construido con Next.js, React y TypeScript.
+Web app para monitorear y optimizar Facebook e Instagram Ads con agentes autónomos. Está construida con Next.js, React, TypeScript y Supabase.
 
 ## Qué incluye
 
+- Cuentas de usuario con Supabase Auth; cada usuario tiene su propio workspace.
 - Espacios multiempresa con varias cuentas publicitarias.
 - OAuth real de Meta con el token cifrado en el servidor.
-- Importación de cuentas, campañas e Insights del mes.
+- Importación de cuentas, campañas, conjuntos, anuncios e Insights.
 - Dashboard de inversión, ingresos atribuidos, ROAS y resultados.
 - Modos Observador, Copiloto, Autónomo y YOLO por negocio.
 - Motor de optimización con límites duros y explicación de cada decisión.
 - Centro de alertas y registro de actividad de seis agentes.
 - Capa de IA intercambiable: OpenAI, proveedores OpenAI-compatible y adaptadores futuros.
 - Creador guiado de campañas y conceptos creativos.
-- Modo demo completo cuando todavía no hay credenciales.
 - Endpoint de monitoreo programable en `/api/cron/monitor`.
 - Persistencia en Supabase/PostgreSQL con RLS y control de concurrencia.
 
 ## Ejecutar localmente
+
+Pulso necesita Supabase también en desarrollo. Configura las secciones **Supabase** y **Conectar Meta** y después:
 
 ```bash
 npm install
@@ -25,57 +27,31 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Abre [http://localhost:3000](http://localhost:3000). Sin variables de Meta, la aplicación funciona con datos demo.
+Abre [http://localhost:3000](http://localhost:3000) y crea una cuenta. Las cuentas nuevas empiezan con datos demo hasta conectar Meta.
 
-## Configurar Supabase
+## Supabase
 
 1. Crea un proyecto en Supabase.
-2. Abre **SQL Editor** y ejecuta el contenido de:
-
-   ```text
-   supabase/migrations/202609040001_create_pulso_workspaces.sql
-   ```
-
-   Si utilizas Supabase CLI, también puedes aplicar todas las migraciones con `supabase db push`.
-
-3. En `.env.local` agrega los datos del panel **Project Settings → API Keys**:
+2. En **SQL Editor** ejecuta, en orden, todas las migraciones de `supabase/migrations` (o `supabase db push` con Supabase CLI).
+3. En **Authentication → Sign In / Providers** verifica que **Email** esté habilitado.
+4. En **Authentication → URL Configuration** define el **Site URL** (por ejemplo `http://localhost:3000`) y agrega `http://localhost:3000/auth/confirm` en **Redirect URLs**.
+5. En `.env.local` agrega los datos de **Project Settings → API Keys**:
 
    ```bash
    SUPABASE_URL=https://tu-proyecto.supabase.co
    SUPABASE_SECRET_KEY=sb_secret_...
-   PULSO_WORKSPACE_ID=00000000-0000-4000-8000-000000000001
-   ```
-
-4. Reinicia `npm run dev`.
-
-Ejecuta también las migraciones posteriores en orden (`202609130001_one_workspace_per_owner.sql` agrega un workspace único por usuario).
-
-Cuando faltan las variables, Pulso continúa usando `data/workspace.json`, por lo que el desarrollo local no queda bloqueado.
-
-## Autenticación con Supabase Auth
-
-Cada usuario inicia sesión con correo y contraseña y tiene su propio workspace, con sus cuentas de Meta, agentes e historial. Para activarla:
-
-1. En Supabase abre **Authentication → Sign In / Providers** y verifica que **Email** esté habilitado.
-2. En **Authentication → URL Configuration** define el **Site URL** (por ejemplo `http://localhost:3000`) y agrega `http://localhost:3000/auth/confirm` en **Redirect URLs**.
-3. Agrega en `.env.local` la llave publicable de **Project Settings → API Keys** (usa el mismo `SUPABASE_URL`):
-
-   ```bash
    SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
    ```
-
-   El inicio de sesión ocurre en server actions, así que la llave no necesita llegar al navegador. Se lee en tiempo de ejecución; también se acepta `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` si ya está definida al compilar.
 
 Cómo funciona:
 
 - `middleware.ts` renueva la sesión en cada solicitud, envía a `/login` a quien no la tenga y responde `401` en las API. Cada ruta vuelve a verificar la sesión con `getClaims()` antes de tocar datos.
-- El primer inicio de sesión crea un workspace con datos demo y `owner_id` igual al usuario. Conectar Meta los reemplaza por las cuentas reales.
+- El primer inicio de sesión crea el workspace del usuario (`owner_id` único y obligatorio).
 - Las lecturas y escrituras usan la llave secreta solo en el servidor, siempre filtradas por el workspace del usuario autenticado. Las políticas RLS de la tabla permanecen activas como segunda barrera.
-- `/api/cron/monitor` recorre todos los workspaces con dueño y exige `CRON_SECRET` en producción.
-- **Instalaciones previas:** si ya usabas el workspace `PULSO_WORKSPACE_ID`, define `PULSO_LEGACY_OWNER_EMAIL` con tu correo. Al iniciar sesión con él, recuperas ese workspace con su conexión de Meta e historial.
-- Sin las variables de Auth, en desarrollo la app funciona en modo de un solo usuario sin inicio de sesión. En producción se niega a responder (`503`) para no quedar abierta.
+- Cada workspace se guarda como un documento JSONB. Las escrituras usan una columna de versión y reintentos optimistas para que el cron y una acción del usuario no se sobrescriban.
+- Sin las variables de Supabase, la app responde `503` en lugar de quedar abierta.
 
-`SUPABASE_SECRET_KEY` puede omitir RLS y nunca debe llevar el prefijo `NEXT_PUBLIC_` ni utilizarse desde el navegador. La aplicación solo crea el cliente administrativo en rutas y componentes de servidor. También se acepta temporalmente `SUPABASE_SERVICE_ROLE_KEY` para proyectos que todavía usan la llave legacy.
+`SUPABASE_SECRET_KEY` omite RLS: nunca le agregues el prefijo `NEXT_PUBLIC_` ni la uses desde el navegador. El inicio de sesión ocurre en server actions, así que tampoco la llave publicable necesita llegar al navegador.
 
 ## IA generativa y proveedores
 
@@ -105,21 +81,20 @@ Gemini y un proveedor propio ya tienen contrato y estado visibles en la interfaz
 ## Conectar Meta
 
 1. En Meta for Developers, abre tu aplicación y agrega Facebook Login y Marketing API.
-2. Copia `.env.example` como `.env.local`.
-3. Completa `META_APP_ID` y `META_APP_SECRET`.
-4. Genera `META_TOKEN_ENCRYPTION_KEY`:
+2. Completa `META_APP_ID` y `META_APP_SECRET`.
+3. Genera `META_TOKEN_ENCRYPTION_KEY`:
 
    ```bash
    openssl rand -base64 32
    ```
 
-5. En Facebook Login registra esta URI OAuth válida:
+4. En Facebook Login registra esta URI OAuth válida:
 
    ```text
    http://localhost:3000/api/meta/callback
    ```
 
-6. Reinicia el servidor y selecciona **Conexiones → Conectar con Meta**.
+5. Reinicia el servidor y selecciona **Conexiones → Conectar con Meta**.
 
 La integración solicita `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement` e `instagram_basic`. El token inicial se intercambia por uno de larga duración y se cifra antes de guardarse. En modo desarrollo solo funcionará con administradores, desarrolladores o testers de la app. Para ofrecer el SaaS a clientes externos habrá que completar App Review y los requisitos de acceso de Marketing API indicados por Meta.
 
@@ -162,19 +137,13 @@ Un candado en el workspace impide que el cron y una ejecución manual optimicen 
 npm test   # pruebas del planeador y los guardrails
 ```
 
-En Vercel, `vercel.json` ejecuta el monitor cada hora. En otro proveedor, programa una llamada `GET /api/cron/monitor` con `Authorization: Bearer $CRON_SECRET`.
+El monitor se ejecuta con `GET /api/cron/monitor` y `Authorization: Bearer $CRON_SECRET`; ver **Desplegar gratis en Vercel** para programarlo.
 
 ## Creador y publicación
 
-En modo demo, el creador simula el lanzamiento para validar todo el recorrido. Con una cuenta real, Pulso importa Página, Instagram y Pixel/dataset, y puede crear la estructura completa de una campaña de ventas: campaña, ad set, audiencia México, creativo de enlace y anuncio. Todos los elementos se preparan pausados y solo se activan cuando el usuario marca **Publicar automáticamente**.
+Con datos demo, el creador simula el lanzamiento para validar todo el recorrido. Con una cuenta real, Pulso importa Página, Instagram y Pixel/dataset, y puede crear la estructura completa de una campaña de ventas: campaña, ad set, audiencia México, creativo de enlace y anuncio. Todos los elementos se preparan pausados y solo se activan cuando el usuario marca **Publicar automáticamente**.
 
 Las campañas nativas de formularios y mensajes se conservan como borrador hasta agregar al onboarding la selección explícita del formulario instantáneo o número de WhatsApp. Si Meta rechaza alguna parte de una creación, los elementos que ya haya aceptado permanecen pausados para evitar gasto accidental.
-
-## Persistencia y producción
-
-Con Supabase configurado, cada workspace se almacena como un documento JSONB en PostgreSQL. Las escrituras utilizan una columna de versión y reintentos optimistas para impedir que el cron y una acción del usuario se sobrescriban silenciosamente. El workspace se obtiene de la sesión del usuario; ver **Autenticación con Supabase Auth**.
-
-Sin Supabase, `data/workspace.json` permanece como fallback de desarrollo de un solo usuario.
 
 ## Desplegar gratis en Vercel
 
@@ -193,10 +162,9 @@ El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cr
    | `NEXT_PUBLIC_APP_URL` | `https://tu-app.vercel.app` |
    | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` | Desde Supabase → API Keys |
    | `META_APP_ID`, `META_APP_SECRET`, `META_GRAPH_VERSION` | Desde tu app de Meta |
-   | `META_TOKEN_ENCRYPTION_KEY` | El **mismo** valor de `.env`, o los tokens guardados dejarán de descifrarse |
+   | `META_TOKEN_ENCRYPTION_KEY` | Un valor fijo; si cambia, los tokens de Meta guardados dejan de descifrarse |
    | `CRON_SECRET` | `openssl rand -hex 32` |
    | `AI_PROVIDER` y sus llaves | Igual que en `.env` |
-   | `PULSO_WORKSPACE_ID`, `PULSO_LEGACY_OWNER_EMAIL` | Solo si recuperas un workspace previo |
 
    `NEXT_PUBLIC_APP_URL` se fija al compilar: si la agregas después del primer despliegue, vuelve a desplegar.
 4. **Meta**: en Facebook Login → Settings agrega `https://tu-app.vercel.app/api/meta/callback` a las URI de redirección OAuth válidas.
@@ -210,5 +178,6 @@ El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cr
 ```bash
 npm run typecheck
 npm run lint
+npm test
 npm run build
 ```

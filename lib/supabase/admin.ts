@@ -1,23 +1,14 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
 
-let adminClient: SupabaseClient<Database> | null | undefined;
+let adminClient: SupabaseClient<Database> | undefined;
 
-export function hasSupabaseConfig(): boolean {
-  return Boolean(
-    process.env.SUPABASE_URL &&
-    (process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY),
-  );
-}
-
-export function getSupabaseAdmin(): SupabaseClient<Database> | null {
-  if (adminClient !== undefined) return adminClient;
+/** Server-only client. It bypasses RLS, so every query must filter by the session's workspace. */
+export function getSupabaseAdmin(): SupabaseClient<Database> {
+  if (adminClient) return adminClient;
   const url = process.env.SUPABASE_URL;
-  const secretKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !secretKey) {
-    adminClient = null;
-    return null;
-  }
+  const secretKey = process.env.SUPABASE_SECRET_KEY;
+  if (!url || !secretKey) throw new Error("Faltan SUPABASE_URL o SUPABASE_SECRET_KEY");
   adminClient = createClient<Database>(url, secretKey, {
     auth: {
       autoRefreshToken: false,
