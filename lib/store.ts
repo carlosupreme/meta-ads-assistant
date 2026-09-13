@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { demoData } from "./demo-data";
 import type { WorkspaceData } from "./types";
 import { getSupabaseAdmin } from "./supabase/admin";
@@ -87,6 +87,59 @@ export async function findOrCreateWorkspace(owner: WorkspaceOwner): Promise<stri
     if (winner) return winner;
   }
   throw new Error(`Supabase: ${error?.message ?? "no fue posible crear el workspace"}`);
+}
+
+export interface ReportLink {
+  token: string;
+  createdAt: string;
+}
+
+export async function getReportLink(workspaceId: string, organizationId: string): Promise<ReportLink | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("pulso_report_links")
+    .select("token,created_at")
+    .eq("workspace_id", workspaceId)
+    .eq("organization_id", organizationId)
+    .is("revoked_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase: ${error.message}. Ejecuta las migraciones incluidas en supabase/migrations.`);
+  return data ? { token: data.token, createdAt: data.created_at } : null;
+}
+
+export async function revokeReportLinks(workspaceId: string, organizationId: string): Promise<void> {
+  const { error } = await getSupabaseAdmin()
+    .from("pulso_report_links")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("workspace_id", workspaceId)
+    .eq("organization_id", organizationId)
+    .is("revoked_at", null);
+  if (error) throw new Error(`Supabase: ${error.message}`);
+}
+
+/** Issues a new unguessable link and revokes the previous one, so a leaked URL stops working. */
+export async function rotateReportLink(workspaceId: string, organizationId: string): Promise<ReportLink> {
+  await revokeReportLinks(workspaceId, organizationId);
+  const { data, error } = await getSupabaseAdmin()
+    .from("pulso_report_links")
+    .insert({ token: randomBytes(24).toString("base64url"), workspace_id: workspaceId, organization_id: organizationId })
+    .select("token,created_at")
+    .single();
+  if (error || !data) throw new Error(`Supabase: ${error?.message ?? "no fue posible crear el enlace"}`);
+  return { token: data.token, createdAt: data.created_at };
+}
+
+export async function findReportLink(token: string): Promise<{ workspaceId: string; organizationId: string } | null> {
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+  const { data, error } = await getSupabaseAdmin()
+    .from("pulso_report_links")
+    .select("workspace_id,organization_id")
+    .eq("token", token)
+    .is("revoked_at", null)
+    .maybeSingle();
+  if (error) throw new Error(`Supabase: ${error.message}`);
+  return data ? { workspaceId: data.workspace_id, organizationId: data.organization_id } : null;
 }
 
 export class AgentBusyError extends Error {

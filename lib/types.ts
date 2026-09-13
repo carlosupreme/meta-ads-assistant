@@ -6,6 +6,7 @@ export type NavView =
   | "agents"
   | "creatives"
   | "alerts"
+  | "reports"
   | "connections"
   | "settings";
 
@@ -30,6 +31,20 @@ export interface Organization {
   revenueThisMonth: number;
   resultValue: number;
   connected: boolean;
+  report?: ReportSettings;
+}
+
+/** Client reporting preferences for one business. */
+export interface ReportSettings {
+  clientEmails: string[];
+  weeklyEmail: boolean;
+  lastSentAt?: string;
+}
+
+/** Agency identity shown on client reports and emails. */
+export interface Branding {
+  agencyName: string;
+  accentColor: string;
 }
 
 export interface Campaign {
@@ -188,6 +203,7 @@ export interface WorkspaceData {
   budgetChanges: BudgetChange[];
   /** OpenAI model chosen by the workspace owner; generative AI stays off until one is picked. */
   aiModel?: string;
+  branding?: Branding;
   /** Prevents the cron and a manual run from optimizing the same account at once. */
   agentLock?: { token: string; expiresAt: string };
 }

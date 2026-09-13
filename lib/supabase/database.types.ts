@@ -31,6 +31,26 @@ export interface Database {
         };
         Relationships: [];
       };
+      pulso_report_links: {
+        Row: {
+          token: string;
+          workspace_id: string;
+          organization_id: string;
+          created_at: string;
+          revoked_at: string | null;
+        };
+        Insert: {
+          token: string;
+          workspace_id: string;
+          organization_id: string;
+          created_at?: string;
+          revoked_at?: string | null;
+        };
+        Update: {
+          revoked_at?: string | null;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

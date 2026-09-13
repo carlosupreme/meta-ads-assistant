@@ -296,6 +296,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
       mode: previous?.mode || "copilot",
       monthlyLimit: previous?.monthlyLimit || 50000,
       targetRoas: previous?.targetRoas,
+      report: previous?.report,
       spentThisMonth: totalSpend,
       revenueThisMonth: totalRevenue,
       resultValue,

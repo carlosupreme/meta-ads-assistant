@@ -2,8 +2,9 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { isSupabaseConfigured, supabaseAuthConfig } from "@/lib/supabase/config";
 
-// The cron authenticates with CRON_SECRET; login and email confirmation must work signed out.
-const PUBLIC_PREFIXES = ["/login", "/auth/", "/api/cron/"];
+// Crons authenticate with CRON_SECRET; login, email confirmation and shared client reports (/r/<token>)
+// must work signed out.
+const PUBLIC_PREFIXES = ["/login", "/auth/", "/api/cron/", "/r/"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

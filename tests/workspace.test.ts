@@ -74,4 +74,10 @@ describe("Meta connection", () => {
     const disconnected: WorkspaceData = { ...structuredClone(demoData), metaConnection: { status: "disconnected" } };
     assert.equal(mergeSyncedWorkspace(disconnected, synced()), disconnected);
   });
+
+  it("keeps client report settings through a sync", () => {
+    const report = { clientEmails: ["cliente@empresa.mx"], weeklyEmail: true };
+    const current: WorkspaceData = { ...structuredClone(demoData), metaConnection: connection, organizations: [realOrganization({ report })] };
+    assert.deepEqual(mergeSyncedWorkspace(current, synced()).organizations[0].report, report);
+  });
 });

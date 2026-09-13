@@ -150,6 +150,28 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - Si Meta rechaza un paso, lo que ya aceptó permanece en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
+## Reportes para clientes
+
+En **Reportes**, cada negocio tiene:
+
+- **Enlace compartible**: página pública de solo lectura en `/r/<token>` con los últimos 7 días (inversión, ingresos, ROAS, gráfica diaria), el uso del presupuesto del mes, las campañas y el trabajo de los agentes. El token es aleatorio (192 bits), no da acceso a Pulso, no se indexa y se puede **generar de nuevo** o **desactivar** en cualquier momento.
+- **PDF**: el botón **Descargar PDF** de esa página abre el diálogo de impresión con estilos preparados para guardar como PDF.
+- **Marca**: nombre de agencia y color principal, compartidos por todos los negocios del workspace.
+- **Resumen semanal por correo**: hasta 20 correos por negocio. Cada persona recibe su propio mensaje con los indicadores de la semana y el enlace al reporte. Se envía los lunes (`/api/cron/weekly-report`) o con **Enviar ahora**.
+
+Para activarlo:
+
+1. Ejecuta la migración `supabase/migrations/202609130002_create_pulso_report_links.sql`. Los enlaces viven en una tabla con RLS y sin políticas: solo el servidor los lee.
+2. Crea una cuenta en [Resend](https://resend.com), verifica tu dominio y crea una API key.
+3. Agrega en el servidor:
+
+   ```bash
+   RESEND_API_KEY=re_...
+   REPORTS_FROM_EMAIL="Reportes <reportes@tudominio.com>"
+   ```
+
+El cron semanal no reenvía un negocio si ya se envió en los últimos 6 días, y usa claves de idempotencia de Resend para que un reintento no duplique correos.
+
 ## Desplegar gratis en Vercel
 
 El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cron). Es para uso personal o no comercial; cuando cobres a clientes, cambia a Pro.
@@ -170,6 +192,7 @@ El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cr
    | `META_TOKEN_ENCRYPTION_KEY` | Un valor fijo; si cambia, los tokens de Meta guardados dejan de descifrarse |
    | `CRON_SECRET` | `openssl rand -hex 32` |
    | `OPENAI_API_KEY` | Tu llave de OpenAI |
+   | `RESEND_API_KEY`, `REPORTS_FROM_EMAIL` | Desde Resend, con dominio verificado |
 
    `NEXT_PUBLIC_APP_URL` se fija al compilar: si la agregas después del primer despliegue, vuelve a desplegar.
 4. **Meta**: en Facebook Login → Settings agrega `https://tu-app.vercel.app/api/meta/callback` a las URI de redirección OAuth válidas.

@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, Bot, BrainCircuit,
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
-  FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, LoaderCircle, LogOut, Megaphone,
+  Copy, FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, Link2, LoaderCircle, LogOut, Megaphone,
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
@@ -71,6 +71,7 @@ const navItems: Array<{ id: NavView; label: string; icon: typeof LayoutDashboard
   { id: "agents", label: "Agentes IA", icon: BrainCircuit },
   { id: "creatives", label: "Creativos", icon: ImageIcon },
   { id: "alerts", label: "Alertas", icon: Bell },
+  { id: "reports", label: "Reportes", icon: FileText },
 ];
 
 const lowerNav: Array<{ id: NavView; label: string; icon: typeof Settings }> = [
@@ -84,6 +85,7 @@ const viewTitles: Record<NavView, { eyebrow: string; title: string }> = {
   agents: { eyebrow: "AUTOMATIZACIÓN", title: "Agentes IA" },
   creatives: { eyebrow: "LABORATORIO", title: "Creativos" },
   alerts: { eyebrow: "MONITOREO", title: "Alertas" },
+  reports: { eyebrow: "CLIENTES", title: "Reportes" },
   connections: { eyebrow: "INTEGRACIONES", title: "Conexiones" },
   settings: { eyebrow: "PREFERENCIAS", title: "Configuración" },
 };
@@ -241,6 +243,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
+    reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
     connections: <ConnectionsView data={data} syncing={syncing} onSync={syncMeta} setToast={setToast} />,
     settings: <SettingsView key={organization.id} organization={organization} aiStatus={aiStatus} aiModels={aiModels} onAiModelSaved={async (message) => { const result = await fetchAiStatus(); if (result) { setAiStatus(result.status); setAiModels(result.models); } setToast(message); }} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
   };
@@ -545,6 +548,122 @@ function ConnectionsView({ data, syncing, onSync, setToast }: { data: SafeWorksp
     </div>
     {!connected && <div className="config-note"><ShieldCheck size={20}/><div><b>Tus credenciales no pasan por el navegador</b><p>La autorización se realiza en Meta. Pulso cifra el token antes de guardarlo y nunca solicita tu contraseña.</p></div></div>}
     <div className="panel setup-card"><PanelHeader title="Lista para conectar" subtitle="Verifica estos pasos en Meta for Developers"/><div className="setup-steps"><div className="done"><span><Check size={15}/></span><p><b>Cuenta de negocio creada</b><small>Ya nos confirmaste este paso.</small></p></div><div className="done"><span><Check size={15}/></span><p><b>Usuario tester agregado</b><small>Ya nos confirmaste este paso.</small></p></div><div><span>3</span><p><b>Variables del servidor</b><small>Agrega App ID, App Secret y la llave de cifrado.</small></p><button onClick={() => setToast("Consulta .env.example para copiar las variables necesarias.")}>Ver configuración</button></div><div><span>4</span><p><b>URI de redirección</b><small>Registra /api/meta/callback en Facebook Login.</small></p></div></div></div>
+  </div>;
+}
+
+interface ReportStatus {
+  link: { url: string; createdAt: string } | null;
+  emailConfigured: boolean;
+}
+
+function ReportsView({ organization, branding, setToast, onSaved }: { organization: Organization; branding: SafeWorkspace["branding"]; setToast: (message: string) => void; onSaved: () => Promise<void> }) {
+  const [status, setStatus] = useState<ReportStatus | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [agencyName, setAgencyName] = useState(branding?.agencyName ?? "");
+  const [accentColor, setAccentColor] = useState(branding?.accentColor ?? "#7056e8");
+  const [emails, setEmails] = useState((organization.report?.clientEmails ?? []).join(", "));
+  const [weekly, setWeekly] = useState(organization.report?.weeklyEmail ?? false);
+  const savedEmails = organization.report?.clientEmails ?? [];
+
+  useEffect(() => {
+    fetch(`/api/reports?organizationId=${encodeURIComponent(organization.id)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) => result.error ? setToast(result.error) : setStatus(result))
+      .catch(() => setToast("No fue posible cargar el enlace del reporte."));
+  }, [organization.id, setToast]);
+
+  async function send(label: string, url: string, method: string, body: unknown) {
+    setBusy(label);
+    try {
+      const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json().catch(() => ({}));
+      return { ok: response.ok, result };
+    } catch {
+      return { ok: false, result: { error: "No hubo respuesta del servidor." } };
+    } finally { setBusy(null); }
+  }
+
+  async function changeLink(method: "POST" | "DELETE") {
+    const { ok, result } = await send(method, "/api/reports", method, { organizationId: organization.id });
+    if (!ok) return setToast(result.error || "No fue posible actualizar el enlace.");
+    setStatus((current) => ({ emailConfigured: current?.emailConfigured ?? false, link: result.link }));
+    setToast(method === "POST" ? "Enlace listo para compartir." : "Enlace desactivado; ya no abre el reporte.");
+  }
+
+  async function copyLink() {
+    if (!status?.link) return;
+    try {
+      await navigator.clipboard.writeText(status.link.url);
+      setToast("Enlace copiado.");
+    } catch {
+      setToast("Copia el enlace manualmente.");
+    }
+  }
+
+  async function saveBranding(event: FormEvent) {
+    event.preventDefault();
+    const { ok, result } = await send("branding", "/api/workspace", "PATCH", { action: "branding", agencyName, accentColor });
+    if (!ok) return setToast(result.error || "No fue posible guardar tu marca.");
+    await onSaved();
+    setToast("Marca guardada.");
+  }
+
+  async function saveEmails(event: FormEvent) {
+    event.preventDefault();
+    const clientEmails = [...new Set(emails.split(/[\s,;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    const { ok, result } = await send("emails", "/api/workspace", "PATCH", { action: "report-settings", organizationId: organization.id, clientEmails, weeklyEmail: weekly });
+    if (!ok) return setToast(result.error || "Revisa los correos: deben ser válidos y máximo 20.");
+    await onSaved();
+    setToast(weekly ? "Resumen semanal activado." : "Correos guardados.");
+  }
+
+  async function sendNow() {
+    const { ok, result } = await send("send", "/api/reports/send", "POST", { organizationId: organization.id });
+    if (ok) await onSaved();
+    setToast(result.message || result.error || "No fue posible enviar el resumen.");
+  }
+
+  return <div className="page-stack narrow">
+    <div className="page-intro"><div><h2>Reportes para tus clientes</h2><p>Comparte los resultados de {organization.name} con tu marca, sin darles acceso a Pulso.</p></div></div>
+
+    <div className="panel report-card">
+      <PanelHeader title="Enlace del reporte" subtitle="Página de solo lectura con los últimos 7 días; tu cliente la puede descargar en PDF"/>
+      <div className="report-card-body">
+        {!status ? <p className="field-note"><LoaderCircle className="spin" size={13}/> Cargando…</p>
+          : status.link ? <>
+            <div className="report-link"><Link2 size={16}/><input readOnly value={status.link.url} onFocus={(event) => event.target.select()}/></div>
+            <div className="report-actions">
+              <button className="primary-button" type="button" onClick={copyLink}><Copy size={15}/> Copiar</button>
+              <a className="secondary-button" href={status.link.url} target="_blank" rel="noreferrer"><Eye size={15}/> Abrir</a>
+              <button className="secondary-button" type="button" onClick={() => changeLink("POST")} disabled={Boolean(busy)}><RefreshCcw size={15}/> Generar nuevo</button>
+              <button className="danger-text" type="button" onClick={() => changeLink("DELETE")} disabled={Boolean(busy)}>Desactivar</button>
+            </div>
+            <small>Generar uno nuevo desactiva el anterior.</small>
+          </>
+            : <div><button className="primary-button" type="button" onClick={() => changeLink("POST")} disabled={Boolean(busy)}>{busy ? <LoaderCircle className="spin" size={15}/> : <Link2 size={15}/>} Crear enlace</button></div>}
+      </div>
+    </div>
+
+    <form className="panel report-card" onSubmit={saveBranding}>
+      <PanelHeader title="Tu marca" subtitle="Aparece en los reportes y correos de todos tus negocios"/>
+      <div className="report-card-body two-fields">
+        <div className="field"><label>Nombre de tu agencia</label><input maxLength={60} placeholder="Ej. Agencia Norte" value={agencyName} onChange={(event) => setAgencyName(event.target.value)}/></div>
+        <div className="field"><label>Color principal</label><div className="color-input"><input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)}/><code>{accentColor}</code></div></div>
+      </div>
+      <div className="form-footer"><button className="primary-button" disabled={agencyName.trim().length < 2 || Boolean(busy)}><Check size={15}/> Guardar marca</button></div>
+    </form>
+
+    <form className="panel report-card" onSubmit={saveEmails}>
+      <PanelHeader title="Resumen semanal por correo" subtitle={status?.emailConfigured === false ? "Falta configurar RESEND_API_KEY y REPORTS_FROM_EMAIL en el servidor" : "Se envía los lunes con el enlace al reporte completo"}/>
+      <div className="report-card-body">
+        <div className="field"><label>Correos de tu cliente</label><textarea placeholder="cliente@empresa.mx, direccion@empresa.mx" value={emails} onChange={(event) => setEmails(event.target.value)}/><small>Hasta 20, separados por comas. Cada persona recibe su propio correo.</small></div>
+        <label className="publish-toggle"><input type="checkbox" checked={weekly} onChange={(event) => setWeekly(event.target.checked)}/><span/><div><b>Enviar cada lunes</b><small suppressHydrationWarning>{organization.report?.lastSentAt ? `Último envío: ${new Date(organization.report.lastSentAt).toLocaleString("es-MX")}` : "Aún no se ha enviado."}</small></div></label>
+      </div>
+      <div className="form-footer report-form-footer">
+        <button type="button" className="secondary-button" onClick={sendNow} disabled={!status?.emailConfigured || !savedEmails.length || Boolean(busy)}>{busy === "send" ? <LoaderCircle className="spin" size={15}/> : <Send size={15}/>} Enviar ahora</button>
+        <button className="primary-button" disabled={Boolean(busy)}><Check size={15}/> Guardar</button>
+      </div>
+    </form>
   </div>;
 }
 

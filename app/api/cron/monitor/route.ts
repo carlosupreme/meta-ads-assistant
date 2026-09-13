@@ -1,18 +1,12 @@
 import { NextResponse } from "next/server";
 import { runAgentEngine } from "@/lib/agent-engine";
+import { isCronAuthorized } from "@/lib/cron";
 import { syncMetaWorkspace } from "@/lib/meta";
 import { commitAgentRun } from "@/lib/optimizer";
 import { AgentBusyError, listWorkspaceIds, updateWorkspace, withAgentLock } from "@/lib/store";
 import { mergeSyncedWorkspace } from "@/lib/workspace";
 
 export const maxDuration = 300;
-
-function authorized(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  // The cron can move money in every account, so production always requires the secret.
-  if (!secret) return process.env.NODE_ENV !== "production";
-  return request.headers.get("authorization") === `Bearer ${secret}`;
-}
 
 async function monitorWorkspace(workspaceId: string) {
   return withAgentLock(workspaceId, async (locked) => {
@@ -29,7 +23,7 @@ async function monitorWorkspace(workspaceId: string) {
 }
 
 export async function GET(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  if (!isCronAuthorized(request)) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   try {
     const workspaceIds = await listWorkspaceIds();
     let executed = 0;

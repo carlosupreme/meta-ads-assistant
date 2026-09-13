@@ -29,7 +29,7 @@ export function mergeSyncedWorkspace(current: WorkspaceData, synced: WorkspaceDa
     organizations: synced.organizations.map((organization) => {
       const local = current.organizations.find((item) => item.id === organization.id);
       return local
-        ? { ...organization, mode: local.mode, monthlyLimit: local.monthlyLimit, targetRoas: local.targetRoas, resultValue: local.resultValue, objective: local.objective }
+        ? { ...organization, mode: local.mode, monthlyLimit: local.monthlyLimit, targetRoas: local.targetRoas, resultValue: local.resultValue, objective: local.objective, report: local.report }
         : organization;
     }),
     campaigns: synced.campaigns,
