@@ -398,10 +398,10 @@ function PerformanceChart({ metrics }: { metrics: SafeWorkspace["metrics"][strin
   const levels = [0, .25, .5, .75, 1];
   return <svg className="performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gráfica de ingresos e inversión">
     <defs><linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#765cf6" stopOpacity=".28"/><stop offset="100%" stopColor="#765cf6" stopOpacity="0"/></linearGradient><linearGradient id="spendGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#20b486" stopOpacity=".16"/><stop offset="100%" stopColor="#20b486" stopOpacity="0"/></linearGradient></defs>
-    {levels.map((level) => { const y = plot.top + chartHeight * (1 - level); return <g key={level}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="#e8e9ef" strokeDasharray="4 5"/><text x={plot.left - 9} y={y + 3} textAnchor="end" fill="#9697a1" fontSize="8">${Math.round((roundMax * level) / 1000)}k</text></g>; })}
+    {levels.map((level) => { const y = plot.top + chartHeight * (1 - level); return <g key={level}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="#e8e9ef" strokeDasharray="4 5"/><text x={plot.left - 9} y={y + 3} textAnchor="end" fill="#9697a1" fontSize="11">${Math.round((roundMax * level) / 1000)}k</text></g>; })}
     <path d={area(revenuePoints)} fill="url(#revenueGradient)"/><path d={area(spendPoints)} fill="url(#spendGradient)"/><path d={line(revenuePoints)} fill="none" stroke="#765cf6" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/><path d={line(spendPoints)} fill="none" stroke="#20b486" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
     {revenuePoints.map(([x, y], index) => <circle key={`r-${index}`} cx={x} cy={y} r="2.4" fill="#fff" stroke="#765cf6" strokeWidth="1.5"/>)}
-    {metrics.map((point, index) => { const x = plot.left + (index / Math.max(metrics.length - 1, 1)) * chartWidth; return <text key={point.date} x={x} y={height - 6} textAnchor="middle" fill="#8b8d98" fontSize="8">{point.date}</text>; })}
+    {metrics.map((point, index) => { const x = plot.left + (index / Math.max(metrics.length - 1, 1)) * chartWidth; return <text key={point.date} x={x} y={height - 6} textAnchor="middle" fill="#8b8d98" fontSize="11">{point.date}</text>; })}
   </svg>;
 }
 
