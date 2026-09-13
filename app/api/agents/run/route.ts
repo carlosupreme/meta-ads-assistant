@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runAgentEngine } from "@/lib/agent-engine";
+import { requireApiSession } from "@/lib/auth";
 import { commitAgentRun } from "@/lib/optimizer";
 import { AgentBusyError, updateWorkspace, withAgentLock } from "@/lib/store";
 
 const schema = z.object({ organizationId: z.string().optional() });
 
 export async function POST(request: Request) {
+  const session = await requireApiSession();
+  if (session instanceof NextResponse) return session;
   const parsed = schema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   try {
-    const result = await withAgentLock(async (workspace) => {
+    const result = await withAgentLock(session.workspaceId, async (workspace) => {
       const run = await runAgentEngine(workspace, parsed.data.organizationId);
-      await updateWorkspace((current) => commitAgentRun(current, run, new Date()));
+      await updateWorkspace(session.workspaceId, (current) => commitAgentRun(current, run, new Date()));
       return run;
     });
     return NextResponse.json({

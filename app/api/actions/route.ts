@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { executeAction } from "@/lib/agent-engine";
+import { requireApiSession } from "@/lib/auth";
 import { activityFromAction, applyAction, checkGuardrails, expireStalePending } from "@/lib/optimizer";
 import { updateWorkspace } from "@/lib/store";
 import type { AgentAction, WorkspaceData } from "@/lib/types";
@@ -17,14 +18,17 @@ function finalize(current: WorkspaceData, resolved: AgentAction, now: Date): Wor
 }
 
 export async function POST(request: Request) {
+  const session = await requireApiSession();
+  if (session instanceof NextResponse) return session;
   const parsed = schema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   const { actionId, decision } = parsed.data;
+  const { workspaceId } = session;
   const now = new Date();
 
   // Claim atomically: only one request can move a pending action forward.
   let claimed: AgentAction | undefined;
-  const workspace = await updateWorkspace((stored) => {
+  const workspace = await updateWorkspace(workspaceId, (stored) => {
     const current = expireStalePending(stored, now);
     const action = current.actions.find((item) => item.id === actionId);
     claimed = action?.status === "pending" ? action : undefined;
@@ -39,7 +43,7 @@ export async function POST(request: Request) {
 
   if (decision === "reject") {
     const rejected: AgentAction = { ...claimed, status: "rejected", resolvedAt: now.toISOString() };
-    await updateWorkspace((current) => finalize(current, rejected, now));
+    await updateWorkspace(workspaceId, (current) => finalize(current, rejected, now));
     return NextResponse.json({ success: true, status: "rejected", message: "Propuesta rechazada. El agente no volverá a aplicarla sin tu aprobación." });
   }
 
@@ -50,7 +54,7 @@ export async function POST(request: Request) {
   const resolved: AgentAction = check.allowed
     ? await executeAction(workspace, claimed, now)
     : { ...claimed, status: "blocked", guardrail: check.reason, resolvedAt: now.toISOString() };
-  await updateWorkspace((current) => finalize(current, resolved, now));
+  await updateWorkspace(workspaceId, (current) => finalize(current, resolved, now));
 
   const messages: Partial<Record<AgentAction["status"], string>> = {
     executed: "Cambio aprobado y aplicado.",

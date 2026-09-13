@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { getWorkspaceSession } from "@/lib/auth";
 
 export async function GET(request: Request) {
+  if (!(await getWorkspaceSession())) return NextResponse.redirect(new URL("/login", request.url));
   const appId = process.env.META_APP_ID;
   if (!appId) return NextResponse.redirect(new URL("/?connection=missing-config", request.url));
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;

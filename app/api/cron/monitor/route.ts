@@ -2,33 +2,56 @@ import { NextResponse } from "next/server";
 import { runAgentEngine } from "@/lib/agent-engine";
 import { mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
 import { commitAgentRun } from "@/lib/optimizer";
-import { AgentBusyError, updateWorkspace, withAgentLock } from "@/lib/store";
+import { AgentBusyError, ensureSingleUserWorkspace, listOwnedWorkspaceIds, updateWorkspace, withAgentLock } from "@/lib/store";
+import { authMode } from "@/lib/supabase/config";
+
+export const maxDuration = 300;
+
+function authorized(request: Request): boolean {
+  const secret = process.env.CRON_SECRET;
+  // The cron can move money in every account, so production always requires the secret.
+  if (!secret) return process.env.NODE_ENV !== "production";
+  return request.headers.get("authorization") === `Bearer ${secret}`;
+}
+
+async function monitorWorkspace(workspaceId: string) {
+  return withAgentLock(workspaceId, async (locked) => {
+    let workspace = locked;
+    if (workspace.metaConnection.status === "connected") {
+      // Decide on fresh numbers: sync first, then plan against what was stored.
+      const synced = await syncMetaWorkspace(workspace);
+      workspace = await updateWorkspace(workspaceId, (current) => mergeSyncedWorkspace(current, synced));
+    }
+    const run = await runAgentEngine(workspace);
+    await updateWorkspace(workspaceId, (current) => commitAgentRun(current, run, new Date()));
+    return run;
+  });
+}
 
 export async function GET(request: Request) {
-  const authorization = request.headers.get("authorization");
-  if (process.env.CRON_SECRET && authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
-  }
+  if (!authorized(request)) return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   try {
-    const result = await withAgentLock(async (locked) => {
-      let workspace = locked;
-      if (workspace.metaConnection.status === "connected") {
-        // Decide on fresh numbers: sync first, then plan against what was stored.
-        const synced = await syncMetaWorkspace(workspace);
-        workspace = await updateWorkspace((current) => mergeSyncedWorkspace(current, synced));
+    const workspaceIds = authMode() === "supabase" ? await listOwnedWorkspaceIds() : [await ensureSingleUserWorkspace()];
+    let executed = 0;
+    let pending = 0;
+    let skipped = 0;
+    const failures: Array<{ workspaceId: string; error: string }> = [];
+    // One workspace failing (revoked token, Meta outage) must not stop the others.
+    for (const workspaceId of workspaceIds) {
+      try {
+        const run = await monitorWorkspace(workspaceId);
+        executed += run.actions.filter((action) => action.status === "executed").length;
+        pending += run.actions.filter((action) => action.status === "pending").length;
+      } catch (error) {
+        if (error instanceof AgentBusyError) skipped += 1;
+        else failures.push({ workspaceId, error: error instanceof Error ? error.message : "Falló el monitoreo" });
       }
-      const run = await runAgentEngine(workspace);
-      await updateWorkspace((current) => commitAgentRun(current, run, new Date()));
-      return run;
-    });
-    return NextResponse.json({
-      ok: true,
-      executed: result.actions.filter((action) => action.status === "executed").length,
-      pending: result.actions.filter((action) => action.status === "pending").length,
-      summary: result.summary,
-    });
+    }
+    return NextResponse.json(
+      { ok: failures.length === 0, workspaces: workspaceIds.length, executed, pending, skipped, failures },
+      { status: failures.length && failures.length === workspaceIds.length ? 500 : 200 },
+    );
   } catch (error) {
-    if (error instanceof AgentBusyError) return NextResponse.json({ ok: true, skipped: error.message });
     return NextResponse.json({ error: error instanceof Error ? error.message : "Falló el monitoreo" }, { status: 500 });
   }
 }

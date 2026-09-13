@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, Bot, BrainCircuit,
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
-  FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, LoaderCircle, Megaphone,
+  FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, LoaderCircle, LogOut, Megaphone,
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
@@ -88,7 +88,7 @@ const agentMeta = {
   Creativos: { icon: WandSparkles, color: "pink", description: "Produce y prueba variantes de anuncios." },
 } as const;
 
-export function AppShell({ initialData }: { initialData: SafeWorkspace }) {
+export function AppShell({ initialData, account }: { initialData: SafeWorkspace; account: { name: string; email: string } | null }) {
   const [data, setData] = useState(initialData);
   const [view, setView] = useState<NavView>("dashboard");
   const [organizationId, setOrganizationId] = useState(initialData.organizations[0]?.id || "");
@@ -255,7 +255,13 @@ export function AppShell({ initialData }: { initialData: SafeWorkspace }) {
           <p>Tu cuenta está siendo monitoreada.</p>
           <button onClick={() => setView("agents")}>Ver actividad <ChevronRight size={14} /></button>
         </div>
-        <div className="user-card"><div className="user-avatar">CR</div><span><b>{data.user.name}</b><small>{data.user.email}</small></span><MoreHorizontal size={18} /></div>
+        <div className="user-card">
+          <div className="user-avatar">{(account?.name || data.user.name).split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase()}</div>
+          <span><b>{account?.name || data.user.name}</b><small>{account?.email || data.user.email}</small></span>
+          {account
+            ? <form action="/auth/signout" method="post"><button className="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión"><LogOut size={16} /></button></form>
+            : <MoreHorizontal size={18} />}
+        </div>
       </aside>
 
       <main className="main">

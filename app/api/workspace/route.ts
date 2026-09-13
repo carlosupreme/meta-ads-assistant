@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireApiSession } from "@/lib/auth";
 import { updateMetaObject } from "@/lib/meta";
 import { toSafeWorkspace } from "@/lib/safe-workspace";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
@@ -7,7 +8,9 @@ import { readWorkspace, updateWorkspace } from "@/lib/store";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(toSafeWorkspace(await readWorkspace()));
+  const session = await requireApiSession();
+  if (session instanceof NextResponse) return session;
+  return NextResponse.json(toSafeWorkspace(await readWorkspace(session.workspaceId)));
 }
 
 const updateSchema = z.discriminatedUnion("action", [
@@ -24,13 +27,15 @@ const updateSchema = z.discriminatedUnion("action", [
 ]);
 
 export async function PATCH(request: Request) {
+  const session = await requireApiSession();
+  if (session instanceof NextResponse) return session;
   const parsed = updateSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   const input = parsed.data;
 
   if (input.action === "campaign-status") {
     // Mirror manual toggles in Meta; otherwise the next sync would silently revert them.
-    const { metaConnection, campaigns } = await readWorkspace();
+    const { metaConnection, campaigns } = await readWorkspace(session.workspaceId);
     const campaign = campaigns.find((item) => item.id === input.campaignId);
     if (!campaign) return NextResponse.json({ error: "Campaña no encontrada" }, { status: 404 });
     if (campaign.status === "DRAFT") return NextResponse.json({ error: "Publica el borrador antes de activarlo" }, { status: 409 });
@@ -43,7 +48,7 @@ export async function PATCH(request: Request) {
     }
   }
 
-  const workspace = await updateWorkspace((current) => {
+  const workspace = await updateWorkspace(session.workspaceId, (current) => {
     if (input.action === "organization") {
       current.organizations = current.organizations.map((organization) => organization.id === input.organizationId
         ? {

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { getWorkspaceSession } from "@/lib/auth";
 import { encryptSecret } from "@/lib/crypto";
 import { exchangeCode, fetchMetaIdentity, mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
 import { updateWorkspace } from "@/lib/store";
@@ -7,6 +8,9 @@ import { updateWorkspace } from "@/lib/store";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || url.origin;
+  // The Meta token is stored in the workspace of whoever started the connection.
+  const session = await getWorkspaceSession();
+  if (!session) return NextResponse.redirect(`${appUrl}/login`);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const error = url.searchParams.get("error_description");
@@ -17,7 +21,7 @@ export async function GET(request: Request) {
   try {
     const token = await exchangeCode(code, `${appUrl}/api/meta/callback`);
     const identity = await fetchMetaIdentity(token);
-    const connected = await updateWorkspace((current) => ({
+    const connected = await updateWorkspace(session.workspaceId, (current) => ({
       ...current,
       metaConnection: {
         status: "connected",
@@ -28,7 +32,7 @@ export async function GET(request: Request) {
       },
     }));
     const synced = await syncMetaWorkspace(connected);
-    await updateWorkspace((current) => mergeSyncedWorkspace(current, synced));
+    await updateWorkspace(session.workspaceId, (current) => mergeSyncedWorkspace(current, synced));
     const response = NextResponse.redirect(`${appUrl}/?connection=success`);
     response.cookies.delete("meta_oauth_state");
     return response;

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireApiSession } from "@/lib/auth";
 import { createMetaSalesCampaign } from "@/lib/meta";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
 
@@ -15,10 +16,12 @@ const campaignSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const session = await requireApiSession();
+  if (session instanceof NextResponse) return session;
   const parsed = campaignSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Revisa los datos de la campaña" }, { status: 400 });
   const input = parsed.data;
-  const current = await readWorkspace();
+  const current = await readWorkspace(session.workspaceId);
   const selectedOrganization = current.organizations.find((item) => item.id === input.organizationId);
   if (!selectedOrganization) return NextResponse.json({ error: "Negocio no encontrado" }, { status: 404 });
   let createdId = `cmp-${Date.now()}`;
@@ -41,7 +44,7 @@ export async function POST(request: Request) {
       }
     }
   }
-  const workspace = await updateWorkspace((current) => {
+  const workspace = await updateWorkspace(session.workspaceId, (current) => {
     const organization = current.organizations.find((item) => item.id === input.organizationId);
     if (!organization) throw new Error("Negocio no encontrado");
     const id = createdId;
