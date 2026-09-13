@@ -2,24 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { executeAction } from "@/lib/agent-engine";
 import { requireApiSession } from "@/lib/auth";
-import { activityFromAction, applyAction, checkGuardrails, expireStalePending } from "@/lib/optimizer";
+import { checkGuardrails, expireStalePending, recordAction } from "@/lib/optimizer";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
-import type { AgentAction, WorkspaceData } from "@/lib/types";
+import type { AgentAction } from "@/lib/types";
 
 const schema = z.object({ actionId: z.string().min(1), decision: z.enum(["approve", "reject", "resume"]) });
-
-/** Stores a resolved action: replaces it when it is already in the log, otherwise adds it. */
-function recordResolved(current: WorkspaceData, resolved: AgentAction, now: Date): WorkspaceData {
-  const next = resolved.status === "executed" ? applyAction(current, resolved, now) : current;
-  const exists = next.actions.some((action) => action.id === resolved.id);
-  return {
-    ...next,
-    actions: exists
-      ? next.actions.map((action) => action.id === resolved.id ? resolved : action)
-      : [resolved, ...next.actions].slice(0, 300),
-    activities: [activityFromAction(resolved), ...next.activities].slice(0, 150),
-  };
-}
 
 function respond(resolved: AgentAction, executedMessage: string) {
   const messages: Partial<Record<AgentAction["status"], string>> = {
@@ -62,7 +49,7 @@ async function resumePaused(workspaceId: string, actionId: string, now: Date) {
   const resolved: AgentAction = check.allowed
     ? await executeAction(workspace, resume, now)
     : { ...resume, status: "blocked", guardrail: check.reason, resolvedAt: now.toISOString() };
-  await updateWorkspace(workspaceId, (current) => recordResolved(current, resolved, now));
+  await updateWorkspace(workspaceId, (current) => recordAction(current, resolved, now));
   return respond(resolved, "Listo, se reactivó.");
 }
 
@@ -94,7 +81,7 @@ export async function POST(request: Request) {
 
   if (decision === "reject") {
     const rejected: AgentAction = { ...claimed, status: "rejected", resolvedAt: now.toISOString() };
-    await updateWorkspace(workspaceId, (current) => recordResolved(current, rejected, now));
+    await updateWorkspace(workspaceId, (current) => recordAction(current, rejected, now));
     return NextResponse.json({ success: true, status: "rejected", message: "Propuesta rechazada. El agente no volverá a aplicarla sin tu aprobación." });
   }
 
@@ -105,6 +92,6 @@ export async function POST(request: Request) {
   const resolved: AgentAction = check.allowed
     ? await executeAction(workspace, claimed, now)
     : { ...claimed, status: "blocked", guardrail: check.reason, resolvedAt: now.toISOString() };
-  await updateWorkspace(workspaceId, (current) => recordResolved(current, resolved, now));
+  await updateWorkspace(workspaceId, (current) => recordAction(current, resolved, now));
   return respond(resolved, "Cambio aprobado y aplicado.");
 }

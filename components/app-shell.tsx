@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
 import {
   Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, Bot, BrainCircuit,
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
@@ -8,7 +8,7 @@ import {
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, describeAction, lastStatusChanges, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
@@ -116,6 +116,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const activities = data.activities.filter((item) => item.organizationId === organization?.id);
   const alerts = data.alerts.filter((item) => item.organizationId === organization?.id);
   const creatives = data.creatives.filter((item) => item.organizationId === organization?.id);
+  const ads = data.ads.filter((item) => item.organizationId === organization?.id);
   const actions = data.actions.filter((item) => item.organizationId === organization?.id);
   const pendingCount = actions.filter((item) => item.status === "pending").length;
   const metrics = data.metrics[organization?.id] || [];
@@ -193,13 +194,24 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     setToast(`Modo ${MODE_LABELS[mode]} activado.`);
   }
 
-  async function toggleCampaign(campaign: Campaign) {
-    const response = await fetch("/api/workspace", {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "campaign-status", campaignId: campaign.id, status: campaign.status === "ACTIVE" ? "PAUSED" : "ACTIVE" }),
-    });
-    if (response.ok) setData(await response.json());
-    else setToast((await response.json()).error || "No fue posible cambiar la campaña");
+  /** Manual changes on campaigns and ads: applied on Meta and logged as the user's. */
+  async function control(body: Record<string, unknown>): Promise<boolean> {
+    try {
+      const response = await fetch("/api/control", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (result.workspace) setData(result.workspace);
+      setToast(result.message || result.error || "No fue posible aplicar el cambio.");
+      return response.ok;
+    } catch {
+      setToast("No fue posible aplicar el cambio.");
+      return false;
+    }
+  }
+
+  function toggleCampaign(campaign: Campaign) {
+    void control({ kind: "campaign-status", campaignId: campaign.id, status: campaign.status === "ACTIVE" ? "PAUSED" : "ACTIVE" });
   }
 
   async function decideAction(actionId: string, decision: Decision) {
@@ -239,7 +251,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
 
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} onRun={runAnalysis} running={running} onNavigate={setView} />,
-    campaigns: <CampaignsView campaigns={campaigns} onToggle={toggleCampaign} onCreate={() => setCampaignModal(true)} />,
+    campaigns: <CampaignsView campaigns={campaigns} ads={ads} onToggle={toggleCampaign} onControl={control} onCreate={() => setCampaignModal(true)} />,
     agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
@@ -416,18 +428,79 @@ function PanelHeader({ title, subtitle, action }: { title: string; subtitle: str
   return <div className="panel-header"><div><h3>{title}</h3><p>{subtitle}</p></div>{action}</div>;
 }
 
-function CampaignTable({ campaigns, compact = false, onToggle }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void }) {
+type ControlRequest = (body: Record<string, unknown>) => Promise<boolean>;
+
+function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; onControl?: ControlRequest }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   if (!campaigns.length) return <div className="empty-panel"><Megaphone size={24}/><b>Aún no hay campañas</b><span>Crea la primera con ayuda de los agentes.</span></div>;
   return <div className={`campaign-table ${compact ? "compact" : ""}`}>
     <div className="campaign-row table-head"><span>CAMPAÑA</span><span>ESTADO</span><span>INVERSIÓN</span><span>RESULTADOS</span><span>ROAS</span>{!compact && <span>PRESUPUESTO</span>}<span /></div>
-    {campaigns.map((campaign) => <div className="campaign-row" key={campaign.id}>
-      <div className="campaign-name"><span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{campaign.channel}</small></p></div>
-      <div><span className={`status-badge ${campaign.status.toLowerCase()}`}><i />{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span></div>
-      <div className="number-cell"><b>{money(campaign.spend)}</b><small>este mes</small></div>
-      <div className="number-cell"><b>{campaign.results}</b><small>{campaign.costPerResult ? `${money(campaign.costPerResult)} c/u` : "Sin datos"}</small></div>
-      <div className="roas-cell"><b>{campaign.roas.toFixed(2)}×</b><small className={campaign.trend >= 0 ? "up" : "down"}>{campaign.trend >= 0 ? <ArrowUpRight size={12}/> : <ArrowDownRight size={12}/>} {Math.abs(campaign.trend)}%</small></div>
-      {!compact && <div className="number-cell"><b>{money(campaign.dailyBudget)}</b><small>por día</small></div>}
-      <button className="row-action" onClick={() => onToggle?.(campaign)} title={campaign.status === "ACTIVE" ? "Pausar" : "Activar"}>{campaign.status === "ACTIVE" ? <Pause size={15}/> : <Play size={15}/>}</button>
+    {campaigns.map((campaign) => {
+      const open = expanded === campaign.id;
+      const editableBudget = Boolean(onControl) && campaign.status !== "DRAFT" && campaign.budgetLevel !== "none" && campaign.dailyBudget > 0;
+      return <Fragment key={campaign.id}>
+        <div className={`campaign-row ${open ? "expanded" : ""}`}>
+          <div className="campaign-name">
+            {ads && <button className="expand-button" aria-expanded={open} title={open ? "Ocultar anuncios" : "Ver anuncios"} onClick={() => setExpanded(open ? null : campaign.id)}><ChevronRight size={15}/></button>}
+            <span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{campaign.channel}</small></p>
+          </div>
+          <div><span className={`status-badge ${campaign.status.toLowerCase()}`}><i />{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span></div>
+          <div className="number-cell"><b>{money(campaign.spend)}</b><small>este mes</small></div>
+          <div className="number-cell"><b>{campaign.results}</b><small>{campaign.costPerResult ? `${money(campaign.costPerResult)} c/u` : "Sin datos"}</small></div>
+          <div className="roas-cell"><b>{campaign.roas.toFixed(2)}×</b><small className={campaign.trend >= 0 ? "up" : "down"}>{campaign.trend >= 0 ? <ArrowUpRight size={12}/> : <ArrowDownRight size={12}/>} {Math.abs(campaign.trend)}%</small></div>
+          {!compact && <div className="number-cell">{editableBudget && onControl
+            ? <BudgetEditor campaign={campaign} onSave={(dailyBudget) => onControl({ kind: "campaign-budget", campaignId: campaign.id, dailyBudget })}/>
+            : <><b>{money(campaign.dailyBudget)}</b><small>{campaign.budgetLevel === "none" ? "presupuesto total" : "por día"}</small></>}</div>}
+          <button className="row-action" disabled={campaign.status === "DRAFT"} onClick={() => onToggle?.(campaign)} title={campaign.status === "ACTIVE" ? "Pausar" : "Activar"}>{campaign.status === "ACTIVE" ? <Pause size={15}/> : <Play size={15}/>}</button>
+        </div>
+        {ads && open && <AdList ads={ads.filter((ad) => ad.campaignId === campaign.id)} onControl={onControl}/>}
+      </Fragment>;
+    })}
+  </div>;
+}
+
+function BudgetEditor({ campaign, onSave }: { campaign: Campaign; onSave: (dailyBudget: number) => Promise<boolean> }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(campaign.dailyBudget));
+  const [saving, setSaving] = useState(false);
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    setSaving(true);
+    const saved = await onSave(amount);
+    setSaving(false);
+    if (saved) setEditing(false);
+  }
+  if (!editing) {
+    return <button className="budget-edit" title="Editar presupuesto diario" onClick={() => { setValue(String(campaign.dailyBudget)); setEditing(true); }}><b>{money(campaign.dailyBudget)}</b><small>por día · editar</small></button>;
+  }
+  return <form className="budget-form" onSubmit={save}>
+    <input type="number" min="1" step="1" autoFocus aria-label="Presupuesto diario en MXN" value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }}/>
+    <button className="row-action" title="Guardar" disabled={saving}>{saving ? <LoaderCircle className="spin" size={14}/> : <Check size={14}/>}</button>
+    <button type="button" className="row-action" title="Cancelar" onClick={() => setEditing(false)}><X size={14}/></button>
+  </form>;
+}
+
+function AdList({ ads, onControl }: { ads: Ad[]; onControl?: ControlRequest }) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  async function toggle(ad: Ad) {
+    if (!onControl) return;
+    setBusyId(ad.id);
+    await onControl({ kind: "ad-status", adId: ad.id, status: ad.status === "ACTIVE" ? "PAUSED" : "ACTIVE" });
+    setBusyId(null);
+  }
+  if (!ads.length) return <div className="ad-list empty">Esta campaña no tiene anuncios sincronizados todavía.</div>;
+  return <div className="ad-list">
+    <div className="ad-row ad-head"><span>ANUNCIO</span><span>ESTADO</span><span>GASTO 7 D</span><span>CTR</span><span>FRECUENCIA</span><span>RESULTADOS</span><span/></div>
+    {ads.map((ad) => <div className="ad-row" key={ad.id}>
+      <b title={ad.name}>{ad.name}</b>
+      <span><span className={`status-badge ${ad.status.toLowerCase()}`}><i/>{ad.status === "ACTIVE" ? "Activo" : "Pausado"}</span></span>
+      <span>{money(ad.spend)}</span>
+      <span>{ad.ctr.toFixed(2)}%</span>
+      <span className={ad.frequency >= 4 ? "warn" : ""} title={ad.frequency >= 4 ? "Frecuencia alta: posible fatiga" : undefined}>{ad.frequency.toFixed(1)}</span>
+      <span>{ad.results}</span>
+      <button className="row-action" disabled={!onControl || busyId === ad.id} onClick={() => toggle(ad)} title={ad.status === "ACTIVE" ? "Pausar anuncio" : "Reactivar anuncio"}>{busyId === ad.id ? <LoaderCircle className="spin" size={14}/> : ad.status === "ACTIVE" ? <Pause size={14}/> : <Play size={14}/>}</button>
     </div>)}
   </div>;
 }
@@ -439,13 +512,13 @@ function ActivityList({ activities }: { activities: SafeWorkspace["activities"] 
   }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
 }
 
-function CampaignsView({ campaigns, onToggle, onCreate }: { campaigns: Campaign[]; onToggle: (campaign: Campaign) => void; onCreate: () => void }) {
+function CampaignsView({ campaigns, ads, onToggle, onControl, onCreate }: { campaigns: Campaign[]; ads: Ad[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onCreate: () => void }) {
   const [query, setQuery] = useState("");
   const filtered = campaigns.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
   return <div className="page-stack">
     <div className="page-intro"><div><h2>Todas tus campañas</h2><p>Supervisa resultados y deja que Pulso optimice la inversión.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Crear con IA</button></div>
     <div className="summary-strip"><div><span>Campañas</span><b>{campaigns.length}</b></div><div><span>Activas</span><b className="green-text">{campaigns.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(campaigns.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(campaigns.reduce((sum, c) => sum + c.roas, 0) / Math.max(campaigns.length, 1)).toFixed(2)}×</b></div></div>
-    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} onToggle={onToggle}/></div>
+    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} onToggle={onToggle} onControl={onControl}/></div>
   </div>;
 }
 

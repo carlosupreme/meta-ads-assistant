@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, planRuleActions, projectedMonthSpend, resolveProposals,
+  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, planRuleActions, projectedMonthSpend, recordAction, resolveProposals,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -208,5 +208,39 @@ describe("resume", () => {
     const next = commitAgentRun(workspace({ campaigns: [campaign({ status: "PAUSED" })], actions: [pause({ createdAt: daysAgo(5) })] }), { actions: [resumed], insights: [] }, now);
     assert.equal(next.campaigns[0].status, "ACTIVE");
     assert.equal(lastStatusChanges(next.actions).get("campaign:c1")?.id, "resume");
+  });
+});
+
+describe("manual control", () => {
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
+
+  it("lets the user move a budget beyond 20% but never past the monthly limit", () => {
+    const manual = budgetAction({ source: "user", toBudget: 1_600 });
+    assert.equal(checkGuardrails(manual, context()).allowed, true);
+    assert.equal(checkGuardrails(budgetAction({ toBudget: 1_600 }), context()).allowed, false, "agents keep the 20% cap");
+    // 10,000 + 1,600 × 18 = 38,800 > 30,000.
+    assert.equal(checkGuardrails(manual, context({ organization: organization({ monthlyLimit: 30_000 }) })).allowed, false);
+  });
+
+  it("measures the agents' 20% from the budget the user last set", () => {
+    const budgetChanges = [
+      { campaignId: "c1", organizationId: "org", from: 1_000, to: 1_150, at: hoursAgo(10), source: "agent" as const },
+      { campaignId: "c1", organizationId: "org", from: 1_150, to: 2_000, at: hoursAgo(5), source: "user" as const },
+    ];
+    const campaigns = [campaign({ dailyBudget: 2_000 })];
+    assert.equal(checkGuardrails(budgetAction({ fromBudget: 2_000, toBudget: 2_400 }), context({ campaigns, budgetChanges })).allowed, true);
+    assert.equal(checkGuardrails(budgetAction({ fromBudget: 2_000, toBudget: 2_500 }), context({ campaigns, budgetChanges })).allowed, false);
+  });
+
+  it("allows the user to pause the last active ad of an ad set", () => {
+    const pause = budgetAction({ source: "user", type: "pause_ad", adId: "a1", adName: "Anuncio", fromBudget: undefined, toBudget: undefined });
+    assert.equal(checkGuardrails(pause, context({ ads: [ad()] })).allowed, true);
+  });
+
+  it("records a manual budget change as the user's", () => {
+    const next = recordAction(workspace(), budgetAction({ id: "manual", source: "user", status: "executed", toBudget: 1_500 }), now);
+    assert.equal(next.campaigns[0].dailyBudget, 1_500);
+    assert.equal(next.budgetChanges[0].source, "user");
+    assert.equal(next.actions[0].id, "manual");
   });
 });

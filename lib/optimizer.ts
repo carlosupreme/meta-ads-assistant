@@ -52,11 +52,16 @@ export function projectedMonthSpend(organization: Organization, campaigns: Campa
   return organization.spentThisMonth + activeDaily * daysLeftInMonth(now);
 }
 
-/** Budget the campaign had before any change in the rolling window; the 20% cap is measured against it. */
+/**
+ * Budget before the agents' changes in the rolling window; their 20% cap is measured against it.
+ * A budget set by the user resets the baseline, so earlier agent changes no longer count.
+ */
 export function budgetBaseline(campaign: Campaign, changes: BudgetChange[], now: Date): number {
   const windowStart = now.getTime() - GUARDRAILS.changeWindowHours * HOUR_MS;
-  const recent = changes
-    .filter((change) => change.campaignId === campaign.id && Date.parse(change.at) >= windowStart)
+  const own = changes.filter((change) => change.campaignId === campaign.id);
+  const lastUserChange = Math.max(-Infinity, ...own.filter((change) => change.source === "user").map((change) => Date.parse(change.at)));
+  const recent = own
+    .filter((change) => change.source !== "user" && Date.parse(change.at) >= windowStart && Date.parse(change.at) > lastUserChange)
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return recent[0]?.from ?? campaign.dailyBudget;
 }
@@ -93,7 +98,7 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
   if (action.type === "resume_ad") {
     const ad = ads.find((item) => item.id === action.adId && item.campaignId === campaign.id);
     if (!ad || ad.status !== "PAUSED") return block("El anuncio no está pausado.");
-    if (campaign.status !== "ACTIVE") return block("La campaña del anuncio está pausada; reactívala primero.");
+    if (action.source !== "user" && campaign.status !== "ACTIVE") return block("La campaña del anuncio está pausada; reactívala primero.");
     return allow;
   }
 
@@ -105,7 +110,8 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
     const ad = ads.find((item) => item.id === action.adId && item.campaignId === campaign.id);
     if (!ad || ad.status !== "ACTIVE") return block("El anuncio ya no está activo.");
     const siblings = ads.filter((item) => item.adSetId === ad.adSetId && item.id !== ad.id && item.status === "ACTIVE");
-    if (!siblings.length) return block("Es el último anuncio activo de su conjunto; pausarlo detendría la entrega.");
+    // Agents never stop an ad set's delivery; the user may decide to.
+    if (action.source !== "user" && !siblings.length) return block("Es el último anuncio activo de su conjunto; pausarlo detendría la entrega.");
     return allow;
   }
 
@@ -119,9 +125,10 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
   if (action.type === "increase_budget" && toBudget <= campaign.dailyBudget) return block("El aumento no supera el presupuesto actual.");
   if (action.type === "decrease_budget" && toBudget >= campaign.dailyBudget) return block("La reducción no baja el presupuesto actual.");
 
+  // The 20% cap limits the agents; a budget set by the user only has to respect the monthly limit.
   const baseline = budgetBaseline(campaign, budgetChanges, now);
   const variation = Math.abs(toBudget - baseline) / baseline;
-  if (variation > GUARDRAILS.maxBudgetChange + 1e-9) {
+  if (action.source !== "user" && variation > GUARDRAILS.maxBudgetChange + 1e-9) {
     return block(`El cambio acumulado sería de ${Math.round(variation * 100)}% en 24 h; el máximo es ${GUARDRAILS.maxBudgetChange * 100}%.`);
   }
 
@@ -164,7 +171,14 @@ export function applyAction<T extends OptimizationState>(state: T, action: Agent
       updatedAt: "Ahora",
     } : item),
     budgetChanges: [
-      { campaignId: campaign.id, organizationId: campaign.organizationId, from: campaign.dailyBudget, to: toBudget, at: now.toISOString() },
+      {
+        campaignId: campaign.id,
+        organizationId: campaign.organizationId,
+        from: campaign.dailyBudget,
+        to: toBudget,
+        at: now.toISOString(),
+        source: action.source === "user" ? "user" as const : "agent" as const,
+      },
       ...state.budgetChanges,
     ].slice(0, 500),
   };
@@ -507,6 +521,19 @@ export function expireStalePending(workspace: WorkspaceData, now: Date): Workspa
     actions: workspace.actions.map((action) => action.status === "pending" && Date.parse(action.createdAt) < cutoff
       ? { ...action, status: "expired" as const, resolvedAt: now.toISOString() }
       : action),
+  };
+}
+
+/** Stores one action resolved outside an agent run (approvals, manual changes): updates it if logged, otherwise adds it. */
+export function recordAction(current: WorkspaceData, resolved: AgentAction, now: Date): WorkspaceData {
+  const next = resolved.status === "executed" ? applyAction(current, resolved, now) : current;
+  const exists = next.actions.some((action) => action.id === resolved.id);
+  return {
+    ...next,
+    actions: exists
+      ? next.actions.map((action) => action.id === resolved.id ? resolved : action)
+      : [resolved, ...next.actions].slice(0, 300),
+    activities: [activityFromAction(resolved), ...next.activities].slice(0, 150),
   };
 }
 

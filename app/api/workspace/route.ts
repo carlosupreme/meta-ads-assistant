@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { listChatModels } from "@/lib/ai/openai";
 import { requireApiSession } from "@/lib/auth";
-import { updateMetaObject } from "@/lib/meta";
 import { toSafeWorkspace } from "@/lib/safe-workspace";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
 
@@ -14,6 +13,7 @@ export async function GET() {
   return NextResponse.json(toSafeWorkspace(await readWorkspace(session.workspaceId)));
 }
 
+// Changes to campaigns and ads go through /api/control so they reach Meta and the change log.
 const updateSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("organization"),
@@ -27,7 +27,6 @@ const updateSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("branding"), agencyName: z.string().trim().min(2).max(60), accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/) }),
   z.object({ action: z.literal("report-settings"), organizationId: z.string(), clientEmails: z.array(z.email()).max(20), weeklyEmail: z.boolean() }),
   z.object({ action: z.literal("alert-read"), alertId: z.string() }),
-  z.object({ action: z.literal("campaign-status"), campaignId: z.string(), status: z.enum(["ACTIVE", "PAUSED"]) }),
 ]);
 
 export async function PATCH(request: Request) {
@@ -46,21 +45,6 @@ export async function PATCH(request: Request) {
     const models = await listChatModels().catch(() => null);
     if (!models) return NextResponse.json({ error: "No fue posible consultar los modelos de OpenAI." }, { status: 502 });
     if (!models.includes(input.model)) return NextResponse.json({ error: "Ese modelo no está disponible para esta llave de OpenAI." }, { status: 400 });
-  }
-
-  if (input.action === "campaign-status") {
-    // Mirror manual toggles in Meta; otherwise the next sync would silently revert them.
-    const { metaConnection, campaigns } = await readWorkspace(session.workspaceId);
-    const campaign = campaigns.find((item) => item.id === input.campaignId);
-    if (!campaign) return NextResponse.json({ error: "Campaña no encontrada" }, { status: 404 });
-    if (campaign.status === "DRAFT") return NextResponse.json({ error: "Publica el borrador antes de activarlo" }, { status: 409 });
-    if (metaConnection.status === "connected" && metaConnection.encryptedAccessToken) {
-      try {
-        await updateMetaObject(metaConnection.encryptedAccessToken, campaign.id, { status: input.status });
-      } catch (error) {
-        return NextResponse.json({ error: error instanceof Error ? error.message : "Meta no aceptó el cambio" }, { status: 502 });
-      }
-    }
   }
 
   const workspace = await updateWorkspace(session.workspaceId, (current) => {
@@ -83,29 +67,6 @@ export async function PATCH(request: Request) {
         : organization);
     }
     if (input.action === "alert-read") current.alerts = current.alerts.map((alert) => alert.id === input.alertId ? { ...alert, read: true } : alert);
-    if (input.action === "campaign-status") {
-      const campaign = current.campaigns.find((item) => item.id === input.campaignId);
-      current.campaigns = current.campaigns.map((item) => item.id === input.campaignId ? { ...item, status: input.status, updatedAt: "Ahora" } : item);
-      if (campaign) {
-        // Recorded as a user change so the agents never undo it on their own.
-        const at = new Date().toISOString();
-        current.actions = [{
-          id: `action-${globalThis.crypto.randomUUID()}`,
-          organizationId: campaign.organizationId,
-          agent: "Supervisor",
-          type: input.status === "PAUSED" ? "pause_campaign" : "resume_campaign",
-          campaignId: campaign.id,
-          campaignName: campaign.name,
-          reason: input.status === "PAUSED" ? "Pausada manualmente desde Pulso." : "Reactivada manualmente desde Pulso.",
-          impact: "Cambio manual",
-          source: "user",
-          trigger: "manual",
-          status: "executed",
-          createdAt: at,
-          resolvedAt: at,
-        } as const, ...current.actions].slice(0, 300);
-      }
-    }
     return current;
   });
   return NextResponse.json(toSafeWorkspace(workspace));

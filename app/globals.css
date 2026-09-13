@@ -359,3 +359,21 @@ a { color: inherit; text-decoration: none; }
   .connection-chip { display: none; }
   .dashboard-grid, .dashboard-grid.lower { grid-template-columns: minmax(0, 1fr) 300px; }
 }
+
+/* Campaign controls: expandable ads and inline budget */
+.campaign-row.expanded { background: #fbfaff; }
+.expand-button { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 6px; color: #8d8e98; background: transparent; display: grid; place-items: center; transition: transform .15s ease; }
+.expand-button:hover { color: #644bd2; background: #f1eefe; }
+.expand-button[aria-expanded="true"] { color: #644bd2; transform: rotate(90deg); }
+.budget-edit { margin: -3px -5px; padding: 3px 5px; border-radius: 6px; color: inherit; background: transparent; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; }
+.budget-edit:hover { background: #f5f2ff; }
+.budget-edit b { font-size: 13px; }
+.budget-edit small { color: #a1a2ab; font-size: 11px; }
+.budget-form { display: flex; align-items: center; gap: 4px; }
+.budget-form input { width: 84px; height: 28px; padding: 0 6px; border: 1px solid #cfc7f5; border-radius: 6px; outline: 0; color: #33343d; font-size: 13px; }
+.ad-list { min-width: 880px; padding: 2px 17px 10px 60px; border-top: 1px solid #eeeef2; background: #fbfaff; }
+.ad-list.empty { padding: 14px 17px 14px 60px; color: #9899a2; font-size: 12px; }
+.ad-row { min-height: 42px; border-top: 1px solid #efedf6; display: grid; grid-template-columns: minmax(200px, 2fr) 96px .8fr .6fr .7fr .6fr 28px; gap: 12px; align-items: center; font-size: 13px; }
+.ad-row.ad-head { min-height: 30px; border-top: 0; color: #aaaab3; font-size: 11px; font-weight: 700; letter-spacing: .07em; }
+.ad-row b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ad-row .warn { color: #d3783e; font-weight: 650; }

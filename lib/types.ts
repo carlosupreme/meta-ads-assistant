@@ -141,6 +141,8 @@ export interface BudgetChange {
   from: number;
   to: number;
   at: string;
+  /** A user change resets the baseline the agents' 20% cap is measured from. */
+  source?: "agent" | "user";
 }
 
 export interface MetricPoint {

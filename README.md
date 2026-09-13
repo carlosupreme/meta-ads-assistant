@@ -133,6 +133,16 @@ npm test   # pruebas del planeador y los guardrails
 
 El monitor se ejecuta con `GET /api/cron/monitor` y `Authorization: Bearer $CRON_SECRET`; ver **Desplegar gratis en Vercel** para programarlo.
 
+## Control desde Pulso
+
+En **Campañas** se administra todo sin abrir el Administrador de anuncios:
+
+- **Estado de campañas**: pausa o reactiva con el botón de cada fila.
+- **Anuncios**: la flecha de cada campaña muestra sus anuncios con gasto, CTR, frecuencia y resultados de 7 días, y permite pausarlos o reactivarlos.
+- **Presupuesto diario**: haz clic en el monto para editarlo. Con presupuesto por conjunto, el cambio se reparte proporcionalmente.
+
+Cada cambio se aplica en Meta al momento (`/api/control`) y queda en el registro como tuyo, así los agentes nunca lo deshacen. Tus cambios no están sujetos al 20% de los agentes, pero sí al límite mensual, igual que cualquier reactivación. Cuando fijas un presupuesto, el 20% de los agentes se mide desde ese nuevo valor. Puedes pausar incluso el último anuncio de un conjunto; los agentes no.
+
 ## Creador y publicación
 
 Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre crea la campaña real**: sube la imagen a la biblioteca de la cuenta publicitaria y arma campaña, conjunto (Advantage+ en México, 18–65 años), creativo con imagen y anuncio.
