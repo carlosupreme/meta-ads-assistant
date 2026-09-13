@@ -48,7 +48,32 @@ Abre [http://localhost:3000](http://localhost:3000). Sin variables de Meta, la a
 
 4. Reinicia `npm run dev`.
 
-Pulso detecta Supabase automáticamente. Si la tabla todavía no tiene el workspace, importa el estado local existente; si no existe, carga los datos demo. Cuando faltan las variables continúa usando `data/workspace.json`, por lo que el desarrollo local no queda bloqueado.
+Ejecuta también las migraciones posteriores en orden (`202609130001_one_workspace_per_owner.sql` agrega un workspace único por usuario).
+
+Cuando faltan las variables, Pulso continúa usando `data/workspace.json`, por lo que el desarrollo local no queda bloqueado.
+
+## Autenticación con Supabase Auth
+
+Cada usuario inicia sesión con correo y contraseña y tiene su propio workspace, con sus cuentas de Meta, agentes e historial. Para activarla:
+
+1. En Supabase abre **Authentication → Sign In / Providers** y verifica que **Email** esté habilitado.
+2. En **Authentication → URL Configuration** define el **Site URL** (por ejemplo `http://localhost:3000`) y agrega `http://localhost:3000/auth/confirm` en **Redirect URLs**.
+3. Agrega en `.env.local` la llave publicable de **Project Settings → API Keys** (usa el mismo `SUPABASE_URL`):
+
+   ```bash
+   SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+   ```
+
+   El inicio de sesión ocurre en server actions, así que la llave no necesita llegar al navegador. Se lee en tiempo de ejecución; también se acepta `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` si ya está definida al compilar.
+
+Cómo funciona:
+
+- `middleware.ts` renueva la sesión en cada solicitud, envía a `/login` a quien no la tenga y responde `401` en las API. Cada ruta vuelve a verificar la sesión con `getClaims()` antes de tocar datos.
+- El primer inicio de sesión crea un workspace con datos demo y `owner_id` igual al usuario. Conectar Meta los reemplaza por las cuentas reales.
+- Las lecturas y escrituras usan la llave secreta solo en el servidor, siempre filtradas por el workspace del usuario autenticado. Las políticas RLS de la tabla permanecen activas como segunda barrera.
+- `/api/cron/monitor` recorre todos los workspaces con dueño y exige `CRON_SECRET` en producción.
+- **Instalaciones previas:** si ya usabas el workspace `PULSO_WORKSPACE_ID`, define `PULSO_LEGACY_OWNER_EMAIL` con tu correo. Al iniciar sesión con él, recuperas ese workspace con su conexión de Meta e historial.
+- Sin las variables de Auth, en desarrollo la app funciona en modo de un solo usuario sin inicio de sesión. En producción se niega a responder (`503`) para no quedar abierta.
 
 `SUPABASE_SECRET_KEY` puede omitir RLS y nunca debe llevar el prefijo `NEXT_PUBLIC_` ni utilizarse desde el navegador. La aplicación solo crea el cliente administrativo en rutas y componentes de servidor. También se acepta temporalmente `SUPABASE_SERVICE_ROLE_KEY` para proyectos que todavía usan la llave legacy.
 
@@ -147,9 +172,9 @@ Las campañas nativas de formularios y mensajes se conservan como borrador hasta
 
 ## Persistencia y producción
 
-Con Supabase configurado, cada workspace se almacena como un documento JSONB en PostgreSQL. Las escrituras utilizan una columna de versión y reintentos optimistas para impedir que el cron y una acción del usuario se sobrescriban silenciosamente. La tabla incluye `owner_id`, políticas RLS y separación por `PULSO_WORKSPACE_ID`, dejándola preparada para conectar Supabase Auth en la siguiente iteración.
+Con Supabase configurado, cada workspace se almacena como un documento JSONB en PostgreSQL. Las escrituras utilizan una columna de versión y reintentos optimistas para impedir que el cron y una acción del usuario se sobrescriban silenciosamente. El workspace se obtiene de la sesión del usuario; ver **Autenticación con Supabase Auth**.
 
-Sin Supabase, `data/workspace.json` permanece como fallback de desarrollo. Antes de abrir el SaaS a clientes externos todavía se debe agregar autenticación y obtener el workspace desde la sesión en lugar de una variable del servidor.
+Sin Supabase, `data/workspace.json` permanece como fallback de desarrollo de un solo usuario.
 
 ## Comandos de calidad
 
