@@ -160,6 +160,14 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - Si Meta rechaza un paso, lo que ya aceptó permanece en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
+## Trabajo visible
+
+Cada ciclo registra, por negocio y por día, cuántas veces se revisó la cuenta, cuántas campañas y anuncios activos se vigilaron, las verificaciones del ritmo de gasto contra el límite mensual, las señales de riesgo (fatiga, gasto sin resultados, bajo rendimiento o ritmo excedido) y los cambios aplicados o frenados. Se guardan cinco semanas.
+
+- El **Resumen** muestra la semana en curso y la barra lateral la última revisión.
+- El **reporte público** y el **correo semanal** lo cuentan en una frase: "Pulso revisó tu cuenta 168 veces, vigiló 48 anuncios en 6 campañas…". Una semana sin cambios se comunica como una buena semana, no como silencio.
+- Una recomendación o un bloqueo que se repite dentro de 24 horas no se vuelve a registrar ni a contar, así los ciclos horarios no inflan las cifras ni llenan el registro.
+
 ## Reportes para clientes
 
 En **Reportes**, cada negocio tiene:

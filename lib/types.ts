@@ -145,6 +145,22 @@ export interface BudgetChange {
   source?: "agent" | "user";
 }
 
+/** Daily roll-up of what the agents checked for one business, including runs where nothing needed changing. */
+export interface MonitoringDay {
+  /** UTC date, YYYY-MM-DD. */
+  date: string;
+  runs: number;
+  /** Most active campaigns seen in a single run that day. */
+  campaignsChecked: number;
+  /** Most active ads seen in a single run that day. */
+  adsChecked: number;
+  /** New risk signals found: fatigue, spend without results, low return or overspending pace. */
+  anomalies: number;
+  blocked: number;
+  executed: number;
+  lastRunAt: string;
+}
+
 export interface MetricPoint {
   date: string;
   spend: number;
@@ -203,6 +219,8 @@ export interface WorkspaceData {
   creatives: Creative[];
   actions: AgentAction[];
   budgetChanges: BudgetChange[];
+  /** Per business id, the last weeks of monitoring activity. */
+  monitoring?: Record<string, MonitoringDay[]>;
   /** OpenAI model chosen by the workspace owner; generative AI stays off until one is picked. */
   aiModel?: string;
   branding?: Branding;

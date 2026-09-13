@@ -11,7 +11,7 @@ import {
 import type { Ad, AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
-import { accountHealth, describeAction, lastStatusChanges, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
+import { accountHealth, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 
 type Decision = "approve" | "reject" | "resume";
@@ -249,8 +249,10 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     </div></div>;
   }
 
+  const weekSummary = monitoringSummary(data, organization.id, new Date());
+
   const pageContent: Record<NavView, React.ReactNode> = {
-    dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} onRun={runAnalysis} running={running} onNavigate={setView} />,
+    dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
     campaigns: <CampaignsView campaigns={campaigns} ads={ads} onToggle={toggleCampaign} onControl={control} onCreate={() => setCampaignModal(true)} />,
     agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
@@ -289,7 +291,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
         </nav>
         <div className="agent-mini-card">
           <div className="agent-mini-head"><span className="live-dot" /><span>Agentes activos</span><b>6</b></div>
-          <p>Tu cuenta está siendo monitoreada.</p>
+          <p suppressHydrationWarning>{weekSummary.lastRunAt ? `Última revisión ${timeAgo(weekSummary.lastRunAt).toLowerCase()} · ${weekSummary.runs} esta semana` : "Tu cuenta está siendo monitoreada."}</p>
           <button onClick={() => setView("agents")}>Ver actividad <ChevronRight size={14} /></button>
         </div>
         <div className="user-card">
@@ -319,9 +321,25 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   );
 }
 
-function DashboardView({ organization, campaigns, activities, alerts, actions, metrics, onRun, running, onNavigate }: {
+function ValueStrip({ summary, limit }: { summary: MonitoringSummary; limit: number }) {
+  if (!summary.runs) {
+    return <section className="value-strip"><ShieldCheck size={18}/><p><b>Pulso empezará a vigilar tu cuenta en el próximo ciclo</b><span>Cada revisión quedará registrada aquí, aunque no haga falta cambiar nada.</span></p></section>;
+  }
+  const quiet = !summary.anomalies && !summary.blocked && !summary.executed;
+  return <section className="value-strip">
+    <ShieldCheck size={18}/>
+    <p><b>{quiet ? "Semana tranquila: todo dentro de tus metas" : "Pulso cuidó tu cuenta esta semana"}</b><span suppressHydrationWarning>Última revisión {summary.lastRunAt ? timeAgo(summary.lastRunAt).toLowerCase() : "pendiente"}</span></p>
+    <div><strong>{summary.runs}</strong><small>revisiones</small></div>
+    <div><strong>{summary.adsWatched}</strong><small>anuncios vigilados</small></div>
+    <div><strong>{summary.pacingChecks}</strong><small>verificaciones de ritmo</small></div>
+    <div><strong>{summary.anomalies}</strong><small>señales de riesgo</small></div>
+    <div><strong>{money(limit, true)}</strong><small>límite protegido</small></div>
+  </section>;
+}
+
+function DashboardView({ organization, campaigns, activities, alerts, actions, metrics, summary, onRun, running, onNavigate }: {
   organization: Organization; campaigns: Campaign[]; activities: SafeWorkspace["activities"]; alerts: SafeWorkspace["alerts"];
-  actions: AgentAction[]; metrics: MetricPoint[]; onRun: () => void; running: boolean; onNavigate: (view: NavView) => void;
+  actions: AgentAction[]; metrics: MetricPoint[]; summary: MonitoringSummary; onRun: () => void; running: boolean; onNavigate: (view: NavView) => void;
 }) {
   const now = new Date();
   const activeCampaigns = campaigns.filter((campaign) => campaign.status === "ACTIVE");
@@ -367,6 +385,8 @@ function DashboardView({ organization, campaigns, activities, alerts, actions, m
       <MetricCard label="ROAS" value={`${roas.toFixed(2)}×`} note={`Meta de la cuenta: ${target.toFixed(2)}×`} trend={periodTrend(metrics, "roas")} icon={CircleGauge} color="blue" />
       <MetricCard label="Resultados" value={String(Math.round(results))} note={`${active} campañas activas`} trend={null} icon={Target} color="orange" />
     </section>
+
+    <ValueStrip summary={summary} limit={organization.monthlyLimit} />
 
     <section className="dashboard-grid">
       <div className="panel performance-panel">
@@ -729,7 +749,7 @@ function ReportsView({ organization, branding, setToast, onSaved }: { organizati
     <form className="panel report-card" onSubmit={saveEmails}>
       <PanelHeader title="Resumen semanal por correo" subtitle={status?.emailConfigured === false ? "Falta configurar RESEND_API_KEY y REPORTS_FROM_EMAIL en el servidor" : "Se envía los lunes con el enlace al reporte completo"}/>
       <div className="report-card-body">
-        <div className="field"><label>Correos de tu cliente</label><textarea placeholder="cliente@empresa.mx, direccion@empresa.mx" value={emails} onChange={(event) => setEmails(event.target.value)}/><small>Hasta 20, separados por comas. Cada persona recibe su propio correo.</small></div>
+        <div className="field"><label>Correos de tu cliente</label><textarea placeholder="cliente@empresa.mx, direccion@empresa.mx" value={emails} onChange={(event) => setEmails(event.target.value)}/><small>Hasta 20, separados por comas. Cada persona recibe su propio correo; incluye el tuyo para ver lo mismo que tu cliente.</small></div>
         <label className="publish-toggle"><input type="checkbox" checked={weekly} onChange={(event) => setWeekly(event.target.checked)}/><span/><div><b>Enviar cada lunes</b><small suppressHydrationWarning>{organization.report?.lastSentAt ? `Último envío: ${new Date(organization.report.lastSentAt).toLocaleString("es-MX")}` : "Aún no se ha enviado."}</small></div></label>
       </div>
       <div className="form-footer report-form-footer">

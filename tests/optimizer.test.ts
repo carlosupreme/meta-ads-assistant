@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, planRuleActions, projectedMonthSpend, recordAction, resolveProposals,
+  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, monitoringSummary, planRuleActions, projectedMonthSpend, recordAction, resolveProposals,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -242,5 +242,35 @@ describe("manual control", () => {
     assert.equal(next.campaigns[0].dailyBudget, 1_500);
     assert.equal(next.budgetChanges[0].source, "user");
     assert.equal(next.actions[0].id, "manual");
+  });
+});
+
+describe("monitoring", () => {
+  const run = (actions: AgentAction[] = []) => ({ actions, insights: [], checks: [{ organizationId: "org", campaignsChecked: 3, adsChecked: 12 }] });
+  const blocked = (id: string) => budgetAction({ id, type: "decrease_budget", toBudget: 800, status: "blocked", guardrail: "Límite" });
+
+  it("rolls every run into a daily record per business", () => {
+    const next = commitAgentRun(commitAgentRun(workspace(), run(), now), run([blocked("b1")]), now);
+    const [day] = next.monitoring?.org ?? [];
+    assert.equal(day.runs, 2);
+    assert.equal(day.adsChecked, 12);
+    assert.equal(day.anomalies, 1);
+    assert.equal(day.blocked, 1);
+    const summary = monitoringSummary(next, "org", now);
+    assert.equal(summary.pacingChecks, 2);
+    assert.equal(summary.adsWatched, 12);
+    assert.equal(summary.campaignsWatched, 3);
+  });
+
+  it("does not log or count the same finding twice within a day", () => {
+    const next = commitAgentRun(commitAgentRun(workspace(), run([blocked("b1")]), now), run([blocked("b2")]), now);
+    assert.equal(next.monitoring?.org[0].blocked, 1);
+    assert.equal(next.actions.filter((action) => action.status === "blocked").length, 1);
+  });
+
+  it("keeps five weeks of history", () => {
+    const old = { date: "2026-07-01", runs: 5, campaignsChecked: 1, adsChecked: 1, anomalies: 0, blocked: 0, executed: 0, lastRunAt: "2026-07-01T00:00:00.000Z" };
+    const next = commitAgentRun(workspace({ monitoring: { org: [old] } }), run(), now);
+    assert.deepEqual(next.monitoring?.org.map((day) => day.date), [now.toISOString().slice(0, 10)]);
   });
 });

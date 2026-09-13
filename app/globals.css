@@ -377,3 +377,18 @@ a { color: inherit; text-decoration: none; }
 .ad-row.ad-head { min-height: 30px; border-top: 0; color: #aaaab3; font-size: 11px; font-weight: 700; letter-spacing: .07em; }
 .ad-row b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ad-row .warn { color: #d3783e; font-weight: 650; }
+
+/* Monitoring value strip */
+.value-strip { margin-top: 14px; padding: 14px 18px; border: 1px solid #dcefe6; border-radius: 11px; background: linear-gradient(90deg, #f1fbf6, #ffffff); display: grid; grid-template-columns: 22px minmax(220px, 1fr) repeat(5, auto); align-items: center; gap: 18px; }
+.value-strip > svg { color: #16a77b; }
+.value-strip p { margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.value-strip p b { font-size: 14px; }
+.value-strip p span { color: #8a8c96; font-size: 12px; }
+.value-strip > div { display: flex; flex-direction: column; align-items: flex-end; }
+.value-strip strong { font-size: 18px; letter-spacing: -.02em; }
+.value-strip small { color: #8a8c96; font-size: 11px; white-space: nowrap; }
+.report-monitoring-lead { margin: -4px 0 12px; color: #585a66; font-size: 14px; line-height: 1.5; }
+@media (max-width: 1120px) {
+  .value-strip { grid-template-columns: 22px minmax(0, 1fr) repeat(3, auto); }
+  .value-strip > div:nth-last-child(-n+2) { display: none; }
+}

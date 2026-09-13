@@ -2,7 +2,7 @@ import { updateMetaObject } from "./meta";
 import type { AgentAction, AgentActivity, WorkspaceData } from "./types";
 import { aiStatus, analyzeCampaigns, buildAiContext } from "./ai/openai";
 import {
-  actionsFromAi, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun, type AgentRunOutcome,
+  actionsFromAi, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun, type AgentRunOutcome, type RunCheck,
 } from "./optimizer";
 
 export interface AgentRunResult extends AgentRunOutcome {
@@ -20,6 +20,7 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
   const aiModel = aiStatus(workspace.aiModel).configured ? workspace.aiModel : undefined;
   const actions: AgentAction[] = [];
   const insights: AgentActivity[] = [];
+  const checks: RunCheck[] = [];
   let aiHeadline: string | undefined;
 
   for (const organization of organizations) {
@@ -51,10 +52,15 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
     for (const action of resolveProposals(workspace, organization, proposals, now)) {
       actions.push(action.status === "executing" ? await executeAction(workspace, action, now) : action);
     }
+    checks.push({
+      organizationId: organization.id,
+      campaignsChecked: campaigns.filter((campaign) => campaign.status === "ACTIVE").length,
+      adsChecked: workspace.ads.filter((ad) => ad.organizationId === organization.id && ad.status === "ACTIVE").length,
+    });
   }
 
   const summary = summarizeRun(actions);
-  return { actions, insights, summary: actions.length || !aiHeadline ? summary : aiHeadline };
+  return { actions, insights, checks, summary: actions.length || !aiHeadline ? summary : aiHeadline };
 }
 
 /** Pushes an already validated action to Meta. In demo mode the change is simulated locally. */

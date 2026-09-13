@@ -1,7 +1,7 @@
 // Pure optimization core: planning rules, hard guardrails and state transitions.
 // It only has type imports so it runs on the server, in the browser and under `node --test`.
 import type {
-  Ad, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, Organization, WorkspaceData,
+  Ad, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, MonitoringDay, Organization, WorkspaceData,
 } from "./types";
 import type { AiActionProposal } from "./ai/contracts";
 
@@ -19,6 +19,8 @@ export const GUARDRAILS = {
 } as const;
 
 const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+const MONITORING_DAYS_KEPT = 35;
 const DEFAULT_TARGET_ROAS = 3;
 
 export interface OptimizationState {
@@ -537,25 +539,109 @@ export function recordAction(current: WorkspaceData, resolved: AgentAction, now:
   };
 }
 
+/** What one run looked at for a business; findings are counted later from the deduplicated log. */
+export interface RunCheck {
+  organizationId: string;
+  campaignsChecked: number;
+  adsChecked: number;
+}
+
 export interface AgentRunOutcome {
   actions: AgentAction[];
   insights: AgentActivity[];
+  checks?: RunCheck[];
 }
 
-/** Merges a finished run into the latest stored workspace. Repeated blocks within 24 h are not logged again. */
+const FINDING_TYPES = new Set<AgentActionType>(["pause_campaign", "pause_ad", "decrease_budget"]);
+
+/** Adds a run's checks to the per-day monitoring history, dropping days older than five weeks. */
+export function recordMonitoring(
+  monitoring: WorkspaceData["monitoring"],
+  checks: Array<RunCheck & Pick<MonitoringDay, "anomalies" | "blocked" | "executed">>,
+  now: Date,
+): Record<string, MonitoringDay[]> {
+  const next = { ...(monitoring ?? {}) };
+  const date = now.toISOString().slice(0, 10);
+  const oldest = new Date(now.getTime() - MONITORING_DAYS_KEPT * DAY_MS).toISOString().slice(0, 10);
+  for (const check of checks) {
+    const days = (next[check.organizationId] ?? []).filter((day) => day.date >= oldest);
+    const today = days.find((day) => day.date === date);
+    const updated: MonitoringDay = {
+      date,
+      runs: (today?.runs ?? 0) + 1,
+      campaignsChecked: Math.max(today?.campaignsChecked ?? 0, check.campaignsChecked),
+      adsChecked: Math.max(today?.adsChecked ?? 0, check.adsChecked),
+      anomalies: (today?.anomalies ?? 0) + check.anomalies,
+      blocked: (today?.blocked ?? 0) + check.blocked,
+      executed: (today?.executed ?? 0) + check.executed,
+      lastRunAt: now.toISOString(),
+    };
+    next[check.organizationId] = [...days.filter((day) => day.date !== date), updated].sort((a, b) => a.date.localeCompare(b.date));
+  }
+  return next;
+}
+
+/**
+ * Merges a finished run into the latest stored workspace. Recommendations and blocks already logged in the
+ * last 24 h are not logged or counted again, so hourly runs neither spam the log nor inflate the numbers.
+ */
 export function commitAgentRun(current: WorkspaceData, run: AgentRunOutcome, now: Date): WorkspaceData {
   let next = expireStalePending(current, now);
-  const dayAgo = now.getTime() - 24 * HOUR_MS;
-  const recentlyBlocked = new Set(next.actions
-    .filter((action) => action.status === "blocked" && Date.parse(action.createdAt) >= dayAgo)
+  const dayAgo = now.getTime() - DAY_MS;
+  const repeatable = (action: AgentAction) => action.status === "blocked" || action.status === "recommended";
+  const recentlyLogged = new Set(next.actions
+    .filter((action) => repeatable(action) && Date.parse(action.createdAt) >= dayAgo)
     .map(signature));
-  const fresh = run.actions.filter((action) => action.status !== "blocked" || !recentlyBlocked.has(signature(action)));
+  const fresh = run.actions.filter((action) => !repeatable(action) || !recentlyLogged.has(signature(action)));
   for (const action of fresh.filter((item) => item.status === "executed")) next = applyAction(next, action, now);
+  const monitoring = run.checks?.length
+    ? recordMonitoring(next.monitoring, run.checks.map((check) => {
+      const own = fresh.filter((action) => action.organizationId === check.organizationId);
+      return {
+        ...check,
+        anomalies: own.filter((action) => action.source !== "user" && FINDING_TYPES.has(action.type)).length,
+        blocked: own.filter((action) => action.status === "blocked").length,
+        executed: own.filter((action) => action.status === "executed").length,
+      };
+    }), now)
+    : next.monitoring;
   return {
     ...next,
+    monitoring,
     actions: [...fresh, ...next.actions].slice(0, 300),
     activities: [...run.insights, ...fresh.map(activityFromAction), ...next.activities].slice(0, 150),
     alerts: [...alertsFromActions(fresh), ...next.alerts].slice(0, 100),
+  };
+}
+
+export interface MonitoringSummary {
+  days: number;
+  runs: number;
+  /** Every run re-checks the month-end projection against the limit. */
+  pacingChecks: number;
+  campaignsWatched: number;
+  adsWatched: number;
+  anomalies: number;
+  blocked: number;
+  executed: number;
+  lastRunAt?: string;
+}
+
+/** Totals for the last `days` days (today included), shown to prove the account was watched. */
+export function monitoringSummary(workspace: Pick<WorkspaceData, "monitoring">, organizationId: string, now: Date, days = 7): MonitoringSummary {
+  const since = new Date(now.getTime() - (days - 1) * DAY_MS).toISOString().slice(0, 10);
+  const recent = (workspace.monitoring?.[organizationId] ?? []).filter((day) => day.date >= since);
+  const total = (key: "runs" | "anomalies" | "blocked" | "executed") => recent.reduce((sum, day) => sum + day[key], 0);
+  return {
+    days,
+    runs: total("runs"),
+    pacingChecks: total("runs"),
+    campaignsWatched: Math.max(0, ...recent.map((day) => day.campaignsChecked)),
+    adsWatched: Math.max(0, ...recent.map((day) => day.adsChecked)),
+    anomalies: total("anomalies"),
+    blocked: total("blocked"),
+    executed: total("executed"),
+    lastRunAt: recent.at(-1)?.lastRunAt,
   };
 }
 

@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { formatMoney } from "@/lib/optimizer";
-import { buildClientReport, percentChange, type ClientReport } from "@/lib/report";
+import { buildClientReport, monitoringSentence, outcomeSentence, percentChange, type ClientReport } from "@/lib/report";
 import { findReportLink, readWorkspace } from "@/lib/store";
 import { PrintButton } from "./print-button";
 
@@ -52,7 +52,8 @@ export default async function ReportPage({ params }: { params: Promise<{ token: 
   const report = workspace && buildClientReport(workspace, link.organizationId, new Date());
   if (!report) notFound();
 
-  const { branding, week, month, agentWork } = report;
+  const { branding, week, month, agentWork, monitoring } = report;
+  const watched = monitoringSentence(report);
   const generated = new Date(report.generatedAt).toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
 
   return (
@@ -72,6 +73,19 @@ export default async function ReportPage({ params }: { params: Promise<{ token: 
         <div className="report-kpi"><span>ROAS</span><strong>{week.roas.toFixed(2)}×</strong><small>Ingresos por cada $1 invertido</small></div>
         <div className="report-kpi"><span>Presupuesto del mes</span><strong>{Math.round(month.budgetUsed * 100)}%</strong><small>{formatMoney(month.spend)} de {formatMoney(report.organization.monthlyLimit)}</small></div>
       </section>
+
+      {watched && (
+        <section className="report-panel">
+          <h2>Monitoreo continuo</h2>
+          <p className="report-monitoring-lead">{watched} {outcomeSentence(report)}</p>
+          <div className="report-work">
+            <div><b>{monitoring.runs}</b><span>Revisiones de la cuenta</span></div>
+            <div><b>{monitoring.adsWatched}</b><span>Anuncios vigilados</span></div>
+            <div><b>{monitoring.pacingChecks}</b><span>Verificaciones del ritmo de gasto</span></div>
+            <div><b>{monitoring.anomalies}</b><span>Señales de riesgo detectadas</span></div>
+          </div>
+        </section>
+      )}
 
       <section className="report-panel">
         <h2>Ingresos e inversión por día</h2>

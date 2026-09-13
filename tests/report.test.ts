@@ -66,4 +66,19 @@ describe("client report", () => {
     assert.ok(html.includes("https://pulso.test/r/abc"));
     assert.match(subject, /Resumen semanal/);
   });
+
+  it("shows what Pulso watched and tells a quiet week as good news", () => {
+    const today = now.toISOString().slice(0, 10);
+    const workspace: WorkspaceData = {
+      ...structuredClone(demoData),
+      actions: [],
+      monitoring: { "org-casa-norte": [{ date: today, runs: 24, campaignsChecked: 3, adsChecked: 5, anomalies: 0, blocked: 0, executed: 0, lastRunAt: now.toISOString() }] },
+    };
+    const report = buildClientReport(workspace, "org-casa-norte", now);
+    assert.ok(report);
+    assert.equal(report.monitoring.runs, 24);
+    const { html } = renderReportEmail(report, "https://pulso.test/r/abc");
+    assert.match(html, /revisó tu cuenta 24 veces, vigiló 5 anuncios en 3 campañas/);
+    assert.match(html, /no hizo falta intervenir/);
+  });
 });
