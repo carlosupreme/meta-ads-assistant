@@ -176,6 +176,35 @@ Con Supabase configurado, cada workspace se almacena como un documento JSONB en 
 
 Sin Supabase, `data/workspace.json` permanece como fallback de desarrollo de un solo usuario.
 
+## Desplegar gratis en Vercel
+
+El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cron). Es para uso personal o no comercial; cuando cobres a clientes, cambia a Pro.
+
+1. **Supabase**
+   - Ejecuta todas las migraciones de `supabase/migrations`.
+   - En **Authentication → URL Configuration**, cambia el **Site URL** a `https://tu-app.vercel.app` y agrega `https://tu-app.vercel.app/auth/confirm` en **Redirect URLs**.
+2. **GitHub y Vercel**
+   - Sube el repositorio a GitHub.
+   - En [vercel.com/new](https://vercel.com/new) importa el repo; Vercel detecta Next.js automáticamente.
+3. **Variables de entorno** (Vercel → Settings → Environment Variables, entorno Production):
+
+   | Variable | Valor |
+   | --- | --- |
+   | `NEXT_PUBLIC_APP_URL` | `https://tu-app.vercel.app` |
+   | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` | Desde Supabase → API Keys |
+   | `META_APP_ID`, `META_APP_SECRET`, `META_GRAPH_VERSION` | Desde tu app de Meta |
+   | `META_TOKEN_ENCRYPTION_KEY` | El **mismo** valor de `.env`, o los tokens guardados dejarán de descifrarse |
+   | `CRON_SECRET` | `openssl rand -hex 32` |
+   | `AI_PROVIDER` y sus llaves | Igual que en `.env` |
+   | `PULSO_WORKSPACE_ID`, `PULSO_LEGACY_OWNER_EMAIL` | Solo si recuperas un workspace previo |
+
+   `NEXT_PUBLIC_APP_URL` se fija al compilar: si la agregas después del primer despliegue, vuelve a desplegar.
+4. **Meta**: en Facebook Login → Settings agrega `https://tu-app.vercel.app/api/meta/callback` a las URI de redirección OAuth válidas.
+5. **Monitoreo cada hora**: Hobby solo permite el cron diario de `vercel.json`. Para revisar límites cada hora, crea un trabajo en [cron-job.org](https://cron-job.org):
+   - URL: `https://tu-app.vercel.app/api/cron/monitor`, método `GET`, cada hora.
+   - Encabezado: `Authorization: Bearer <tu CRON_SECRET>`.
+   - cron-job.org corta la espera a los 30 s. Con muchas cuentas puede marcar timeout aunque el análisis termine en Vercel; confírmalo en los logs del proyecto.
+
 ## Comandos de calidad
 
 ```bash
