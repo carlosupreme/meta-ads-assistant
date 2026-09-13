@@ -222,7 +222,18 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     if (response.ok) setData(await response.json());
   }
 
-  if (!organization) return <div className="empty-state">No hay cuentas publicitarias todavía.</div>;
+  if (!organization) {
+    const connected = data.metaConnection.status === "connected";
+    return <div className="empty-state"><div className="panel empty-large no-accounts">
+      <Megaphone size={30}/>
+      <h3>{connected ? "No encontramos cuentas publicitarias" : "Conecta tus cuentas de Meta"}</h3>
+      <p>{connected ? "Tu usuario de Meta no tiene cuentas publicitarias o no autorizaste ninguna. Revisa los permisos y vuelve a conectar." : "Pulso importará tus cuentas publicitarias, campañas y anuncios."}</p>
+      <div className="empty-actions">
+        <a className="primary-button" href="/api/meta/connect"><Zap size={16}/> Conectar con Meta</a>
+        <form action="/auth/signout" method="post"><button className="secondary-button">Cerrar sesión</button></form>
+      </div>
+    </div></div>;
+  }
 
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} onRun={runAnalysis} running={running} onNavigate={setView} />,

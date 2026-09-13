@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getWorkspaceSession } from "@/lib/auth";
 import { encryptSecret } from "@/lib/crypto";
-import { exchangeCode, fetchMetaIdentity, mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
-import { updateWorkspace } from "@/lib/store";
+import { exchangeCode, fetchMetaIdentity, syncMetaWorkspace } from "@/lib/meta";
+import { readWorkspace, updateWorkspace } from "@/lib/store";
+import type { WorkspaceData } from "@/lib/types";
+import { applyMetaConnection, clearDemoData } from "@/lib/workspace";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -21,18 +23,19 @@ export async function GET(request: Request) {
   try {
     const token = await exchangeCode(code, `${appUrl}/api/meta/callback`);
     const identity = await fetchMetaIdentity(token);
-    const connected = await updateWorkspace(session.workspaceId, (current) => ({
-      ...current,
-      metaConnection: {
-        status: "connected",
-        userName: identity.name,
-        connectedAt: new Date().toISOString(),
-        lastSyncAt: new Date().toISOString(),
-        encryptedAccessToken: encryptSecret(token),
-      },
-    }));
-    const synced = await syncMetaWorkspace(connected);
-    await updateWorkspace(session.workspaceId, (current) => mergeSyncedWorkspace(current, synced));
+    const now = new Date().toISOString();
+    const connection: WorkspaceData["metaConnection"] = {
+      status: "connected",
+      userName: identity.name,
+      connectedAt: now,
+      lastSyncAt: now,
+      encryptedAccessToken: encryptSecret(token),
+    };
+    // Sync before persisting anything: if Meta fails, the workspace keeps its previous state.
+    const snapshot = await readWorkspace(session.workspaceId);
+    const base = snapshot.metaConnection.status === "demo" ? clearDemoData(snapshot) : snapshot;
+    const synced = await syncMetaWorkspace({ ...base, metaConnection: connection });
+    await updateWorkspace(session.workspaceId, (current) => applyMetaConnection(current, connection, synced));
     const response = NextResponse.redirect(`${appUrl}/?connection=success`);
     response.cookies.delete("meta_oauth_state");
     return response;

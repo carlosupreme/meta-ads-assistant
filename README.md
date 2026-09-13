@@ -46,7 +46,8 @@ Abre [http://localhost:3000](http://localhost:3000) y crea una cuenta. Las cuent
 Cómo funciona:
 
 - `middleware.ts` renueva la sesión en cada solicitud, envía a `/login` a quien no la tenga y responde `401` en las API. Cada ruta vuelve a verificar la sesión con `getClaims()` antes de tocar datos.
-- El primer inicio de sesión crea el workspace del usuario (`owner_id` único y obligatorio).
+- El primer inicio de sesión crea el workspace del usuario (`owner_id` único y obligatorio) con datos demo.
+- Al conectar Meta por primera vez se eliminan todos los datos demo (negocios, campañas, anuncios, métricas, actividad, alertas, creativos y acciones) y quedan solo las cuentas reales. Si la sincronización falla, no se guarda nada. Al reconectar después de desconectar, se conserva el historial real, incluidos los cambios de presupuesto que usan los guardrails.
 - Las lecturas y escrituras usan la llave secreta solo en el servidor, siempre filtradas por el workspace del usuario autenticado. Las políticas RLS de la tabla permanecen activas como segunda barrera.
 - Cada workspace se guarda como un documento JSONB. Las escrituras usan una columna de versión y reintentos optimistas para que el cron y una acción del usuario no se sobrescriban.
 - Sin las variables de Supabase, la app responde `503` en lugar de quedar abierta.

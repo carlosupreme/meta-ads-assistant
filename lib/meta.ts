@@ -317,31 +317,10 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
   return {
     ...workspace,
     metaConnection: { ...workspace.metaConnection, status: "connected", lastSyncAt: new Date().toISOString() },
-    organizations: actualOrganizations.length ? actualOrganizations : workspace.organizations,
+    organizations: actualOrganizations,
     campaigns: actualCampaigns,
     ads: actualAds,
     metrics: actualMetrics,
-  };
-}
-
-/**
- * Applies synced Meta data on top of the latest stored workspace. Settings a person may have changed
- * during the sync (mode, limits, targets) and the agents' history always come from `current`.
- */
-export function mergeSyncedWorkspace(current: WorkspaceData, synced: WorkspaceData): WorkspaceData {
-  if (current.metaConnection.status !== "connected") return current;
-  return {
-    ...current,
-    metaConnection: { ...current.metaConnection, lastSyncAt: synced.metaConnection.lastSyncAt },
-    organizations: synced.organizations.map((organization) => {
-      const local = current.organizations.find((item) => item.id === organization.id);
-      return local
-        ? { ...organization, mode: local.mode, monthlyLimit: local.monthlyLimit, targetRoas: local.targetRoas, resultValue: local.resultValue, objective: local.objective }
-        : organization;
-    }),
-    campaigns: synced.campaigns,
-    ads: synced.ads,
-    metrics: synced.metrics,
   };
 }
 

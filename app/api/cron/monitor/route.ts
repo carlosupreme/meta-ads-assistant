@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { runAgentEngine } from "@/lib/agent-engine";
-import { mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
+import { syncMetaWorkspace } from "@/lib/meta";
 import { commitAgentRun } from "@/lib/optimizer";
 import { AgentBusyError, listWorkspaceIds, updateWorkspace, withAgentLock } from "@/lib/store";
+import { mergeSyncedWorkspace } from "@/lib/workspace";
 
 export const maxDuration = 300;
 

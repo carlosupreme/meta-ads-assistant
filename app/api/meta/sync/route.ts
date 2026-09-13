@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireApiSession } from "@/lib/auth";
-import { mergeSyncedWorkspace, syncMetaWorkspace } from "@/lib/meta";
+import { syncMetaWorkspace } from "@/lib/meta";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
+import { mergeSyncedWorkspace } from "@/lib/workspace";
 
 export async function POST() {
   const session = await requireApiSession();
