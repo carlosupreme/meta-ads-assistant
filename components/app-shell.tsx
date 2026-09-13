@@ -1,0 +1,543 @@
+"use client";
+
+import { useEffect, useState, type FormEvent } from "react";
+import {
+  Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, Bot, BrainCircuit,
+  CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
+  FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, LoaderCircle, Megaphone,
+  MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
+  Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
+} from "lucide-react";
+import type { AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
+import { MODE_LABELS } from "@/lib/types";
+import type { AiProviderStatus } from "@/lib/ai/contracts";
+import { accountHealth, describeAction, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
+import type { SafeWorkspace } from "@/lib/safe-workspace";
+
+type Decision = "approve" | "reject";
+
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+function timeAgo(iso: string): string {
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  if (Number.isNaN(minutes)) return iso;
+  if (minutes < 1) return "Ahora";
+  if (minutes < 60) return `Hace ${minutes} min`;
+  if (minutes < 60 * 24) return `Hace ${Math.round(minutes / 60)} h`;
+  return `Hace ${Math.round(minutes / (60 * 24))} d`;
+}
+
+/** Percent change between the older and newer half of the chart window. */
+function periodTrend(metrics: MetricPoint[], key: "spend" | "revenue" | "roas"): number | null {
+  if (metrics.length < 4) return null;
+  const half = Math.floor(metrics.length / 2);
+  const aggregate = (points: MetricPoint[]) => {
+    const spend = points.reduce((sum, point) => sum + point.spend, 0);
+    const revenue = points.reduce((sum, point) => sum + point.revenue, 0);
+    return key === "roas" ? (spend ? revenue / spend : 0) : key === "spend" ? spend : revenue;
+  };
+  const previous = aggregate(metrics.slice(0, half));
+  const recent = aggregate(metrics.slice(-half));
+  return previous ? ((recent - previous) / previous) * 100 : null;
+}
+
+const ACTION_STATUS: Record<AgentAction["status"], { label: string; badge: string }> = {
+  executed: { label: "Ejecutado", badge: "active" },
+  pending: { label: "Pendiente", badge: "draft" },
+  executing: { label: "En curso", badge: "draft" },
+  recommended: { label: "Sugerido", badge: "paused" },
+  rejected: { label: "Rechazado", badge: "paused" },
+  expired: { label: "Expirado", badge: "paused" },
+  blocked: { label: "Bloqueado", badge: "blocked" },
+  failed: { label: "Falló", badge: "blocked" },
+};
+
+const money = (value: number, compact = false) => new Intl.NumberFormat("es-MX", {
+  style: "currency", currency: "MXN", maximumFractionDigits: 0, notation: compact ? "compact" : "standard",
+}).format(value);
+
+const navItems: Array<{ id: NavView; label: string; icon: typeof LayoutDashboard }> = [
+  { id: "dashboard", label: "Resumen", icon: LayoutDashboard },
+  { id: "campaigns", label: "Campañas", icon: Megaphone },
+  { id: "agents", label: "Agentes IA", icon: BrainCircuit },
+  { id: "creatives", label: "Creativos", icon: ImageIcon },
+  { id: "alerts", label: "Alertas", icon: Bell },
+];
+
+const lowerNav: Array<{ id: NavView; label: string; icon: typeof Settings }> = [
+  { id: "connections", label: "Conexiones", icon: Zap },
+  { id: "settings", label: "Configuración", icon: Settings },
+];
+
+const viewTitles: Record<NavView, { eyebrow: string; title: string }> = {
+  dashboard: { eyebrow: "CENTRO DE CONTROL", title: "Resumen" },
+  campaigns: { eyebrow: "RENDIMIENTO", title: "Campañas" },
+  agents: { eyebrow: "AUTOMATIZACIÓN", title: "Agentes IA" },
+  creatives: { eyebrow: "LABORATORIO", title: "Creativos" },
+  alerts: { eyebrow: "MONITOREO", title: "Alertas" },
+  connections: { eyebrow: "INTEGRACIONES", title: "Conexiones" },
+  settings: { eyebrow: "PREFERENCIAS", title: "Configuración" },
+};
+
+const agentMeta = {
+  Supervisor: { icon: ShieldCheck, color: "violet", description: "Coordina acciones y hace cumplir tus límites." },
+  Estratega: { icon: Target, color: "blue", description: "Diseña campañas y encuentra oportunidades." },
+  Analista: { icon: Activity, color: "cyan", description: "Interpreta rendimiento y detecta anomalías." },
+  Presupuesto: { icon: CircleDollarSign, color: "green", description: "Distribuye inversión hacia lo que funciona." },
+  Audiencias: { icon: UserRound, color: "orange", description: "Prueba segmentos y controla la fatiga." },
+  Creativos: { icon: WandSparkles, color: "pink", description: "Produce y prueba variantes de anuncios." },
+} as const;
+
+export function AppShell({ initialData }: { initialData: SafeWorkspace }) {
+  const [data, setData] = useState(initialData);
+  const [view, setView] = useState<NavView>("dashboard");
+  const [organizationId, setOrganizationId] = useState(initialData.organizations[0]?.id || "");
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const [campaignModal, setCampaignModal] = useState(false);
+  const [modeModal, setModeModal] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiProviderStatus | null>(null);
+  const organization = data.organizations.find((item) => item.id === organizationId) || data.organizations[0];
+  const campaigns = data.campaigns.filter((item) => item.organizationId === organization?.id);
+  const activities = data.activities.filter((item) => item.organizationId === organization?.id);
+  const alerts = data.alerts.filter((item) => item.organizationId === organization?.id);
+  const creatives = data.creatives.filter((item) => item.organizationId === organization?.id);
+  const actions = data.actions.filter((item) => item.organizationId === organization?.id);
+  const pendingCount = actions.filter((item) => item.status === "pending").length;
+  const metrics = data.metrics[organization?.id] || [];
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const status = new URLSearchParams(window.location.search).get("connection");
+    const messages: Record<string, string> = {
+      success: "Meta se conectó y sincronizó correctamente.",
+      "missing-config": "Configura META_APP_ID y META_APP_SECRET para conectar Meta.",
+      denied: "Cancelaste la conexión con Meta.",
+      "invalid-state": "La sesión de conexión expiró. Intenta de nuevo.",
+      error: "Meta no pudo completar la conexión. Revisa la configuración.",
+    };
+    if (status && messages[status]) {
+      setToast(messages[status]);
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/ai/status", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((status) => status && setAiStatus(status))
+      .catch(() => setAiStatus(null));
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  async function refreshWorkspace() {
+    const response = await fetch("/api/workspace", { cache: "no-store" });
+    if (response.ok) setData(await response.json());
+  }
+
+  async function runAnalysis() {
+    setRunning(true);
+    try {
+      const response = await fetch("/api/agents/run", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: organization.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      await refreshWorkspace();
+      setToast(result.summary);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "No se pudo ejecutar el análisis");
+    } finally { setRunning(false); }
+  }
+
+  async function syncMeta() {
+    setSyncing(true);
+    try {
+      const response = await fetch("/api/meta/sync", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      await refreshWorkspace();
+      setToast(result.message || "Datos sincronizados con Meta.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "No se pudo sincronizar");
+    } finally { setSyncing(false); }
+  }
+
+  async function updateMode(mode: AutomationMode) {
+    const response = await fetch("/api/workspace", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "organization", organizationId: organization.id, mode }),
+    });
+    if (response.ok) setData(await response.json());
+    setModeModal(false);
+    setToast(`Modo ${MODE_LABELS[mode]} activado.`);
+  }
+
+  async function toggleCampaign(campaign: Campaign) {
+    const response = await fetch("/api/workspace", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "campaign-status", campaignId: campaign.id, status: campaign.status === "ACTIVE" ? "PAUSED" : "ACTIVE" }),
+    });
+    if (response.ok) setData(await response.json());
+    else setToast((await response.json()).error || "No fue posible cambiar la campaña");
+  }
+
+  async function decideAction(actionId: string, decision: Decision) {
+    setDecidingId(actionId);
+    try {
+      const response = await fetch("/api/actions", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actionId, decision }),
+      });
+      const result = await response.json();
+      await refreshWorkspace();
+      setToast(result.message || result.error || "No fue posible resolver la propuesta");
+    } catch {
+      setToast("No fue posible resolver la propuesta");
+    } finally { setDecidingId(null); }
+  }
+
+  async function readAlert(alertId: string) {
+    const response = await fetch("/api/workspace", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "alert-read", alertId }),
+    });
+    if (response.ok) setData(await response.json());
+  }
+
+  if (!organization) return <div className="empty-state">No hay cuentas publicitarias todavía.</div>;
+
+  const pageContent: Record<NavView, React.ReactNode> = {
+    dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} onRun={runAnalysis} running={running} onNavigate={setView} />,
+    campaigns: <CampaignsView campaigns={campaigns} onToggle={toggleCampaign} onCreate={() => setCampaignModal(true)} />,
+    agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
+    creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
+    alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
+    connections: <ConnectionsView data={data} syncing={syncing} onSync={syncMeta} setToast={setToast} />,
+    settings: <SettingsView key={organization.id} organization={organization} aiStatus={aiStatus} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><div className="brand-mark"><Sparkles size={17} /></div><span>PULSO</span><span className="ai-pill">AI</span></div>
+        <div className="side-label">ESPACIO DE TRABAJO</div>
+        <div className="org-picker-wrap">
+          <button className="org-picker" onClick={() => setOrganizationOpen((open) => !open)}>
+            <span className="org-avatar" style={{ background: organization.color }}>{organization.initials}</span>
+            <span><b>{organization.name}</b><small>{organization.objective}</small></span><ChevronDown size={15} />
+          </button>
+          {organizationOpen && <div className="org-menu">
+            {data.organizations.map((org) => <button key={org.id} onClick={() => { setOrganizationId(org.id); setOrganizationOpen(false); }}>
+              <span className="org-avatar small" style={{ background: org.color }}>{org.initials}</span><span>{org.name}</span>{org.id === organization.id && <Check size={15} />}
+            </button>)}
+            <button className="add-org"><Plus size={15} /> Conectar otro negocio</button>
+          </div>}
+        </div>
+        <nav>
+          <div className="side-label">NAVEGACIÓN</div>
+          {navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
+            <item.icon size={18} /><span>{item.label}</span>
+            {item.id === "alerts" && alerts.filter((alert) => !alert.read).length > 0 && <em>{alerts.filter((alert) => !alert.read).length}</em>}
+            {item.id === "agents" && pendingCount > 0 && <em title="Propuestas esperando aprobación">{pendingCount}</em>}
+          </button>)}
+          <div className="nav-divider" />
+          {lowerNav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><item.icon size={18} /><span>{item.label}</span></button>)}
+        </nav>
+        <div className="agent-mini-card">
+          <div className="agent-mini-head"><span className="live-dot" /><span>Agentes activos</span><b>6</b></div>
+          <p>Tu cuenta está siendo monitoreada.</p>
+          <button onClick={() => setView("agents")}>Ver actividad <ChevronRight size={14} /></button>
+        </div>
+        <div className="user-card"><div className="user-avatar">CR</div><span><b>{data.user.name}</b><small>{data.user.email}</small></span><MoreHorizontal size={18} /></div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div><span className="eyebrow">{viewTitles[view].eyebrow}</span><h1>{viewTitles[view].title}</h1></div>
+          <div className="top-actions">
+            <div className={`connection-chip ${data.metaConnection.status}`}><span />{data.metaConnection.status === "connected" ? "Meta conectado" : data.metaConnection.status === "demo" ? "Modo demo" : "Sin conexión"}</div>
+            <button className="date-button"><CalendarDays size={16} /> Últimos 14 días <ChevronDown size={14} /></button>
+            <button className="icon-button" onClick={() => setView("alerts")}><Bell size={18} />{alerts.some((alert) => !alert.read) && <i />}</button>
+            <button className="primary-button" onClick={() => setCampaignModal(true)}><Plus size={17} /> Nueva campaña</button>
+          </div>
+        </header>
+        <div className="content">{pageContent[view]}</div>
+      </main>
+
+      {campaignModal && <CampaignModal organization={organization} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
+      {modeModal && <ModeModal current={organization.mode} onClose={() => setModeModal(false)} onSelect={updateMode} />}
+      {toast && <div className="toast"><Check size={17} />{toast}<button onClick={() => setToast(null)}><X size={15} /></button></div>}
+    </div>
+  );
+}
+
+function DashboardView({ organization, campaigns, activities, alerts, actions, metrics, onRun, running, onNavigate }: {
+  organization: Organization; campaigns: Campaign[]; activities: SafeWorkspace["activities"]; alerts: SafeWorkspace["alerts"];
+  actions: AgentAction[]; metrics: MetricPoint[]; onRun: () => void; running: boolean; onNavigate: (view: NavView) => void;
+}) {
+  const now = new Date();
+  const activeCampaigns = campaigns.filter((campaign) => campaign.status === "ACTIVE");
+  const active = activeCampaigns.length;
+  const results = campaigns.reduce((sum, campaign) => sum + campaign.results, 0);
+  const roas = organization.spentThisMonth ? organization.revenueThisMonth / organization.spentThisMonth : 0;
+  const target = targetRoas(organization);
+  const returnValue = organization.revenueThisMonth - organization.spentThisMonth;
+  const budgetPercent = Math.min(100, Math.round((organization.spentThisMonth / organization.monthlyLimit) * 100));
+  const health = accountHealth(organization, campaigns, actions, now);
+  const projection = projectedMonthSpend(organization, campaigns, now);
+  const overPace = projection > organization.monthlyLimit;
+  const pending = actions.filter((action) => action.status === "pending").length;
+  const revenueTrend = periodTrend(metrics, "revenue");
+  const ranked = [...activeCampaigns].filter((campaign) => campaign.spend > 0).sort((a, b) => b.roas - a.roas);
+  const best = ranked[0];
+  const worst = ranked.length > 1 ? ranked.at(-1) : undefined;
+  const latestAction = actions.find((action) => action.status !== "blocked");
+  const pulseTitle = pending ? `${pending} ${pending === 1 ? "cambio espera" : "cambios esperan"} tu aprobación`
+    : overPace ? "El ritmo de gasto supera tu límite"
+      : roas >= target ? "Buen momento para escalar" : "El retorno está por debajo de la meta";
+  const insights = [
+    best && { icon: ArrowUpRight, color: "green", title: `${best.name} destaca`, detail: `${best.roas.toFixed(2)}× ROAS · mejor campaña activa` },
+    worst && worst.roas < target && { icon: AlertCircle, color: "orange", title: `${worst.name} requiere atención`, detail: `${worst.roas.toFixed(2)}× frente a la meta de ${target.toFixed(2)}×` },
+    latestAction && { icon: Lightbulb, color: "violet", title: capitalize(describeAction(latestAction)), detail: `${ACTION_STATUS[latestAction.status].label} · ${latestAction.agent}` },
+  ].filter((item): item is { icon: typeof ArrowUpRight; color: string; title: string; detail: string } => Boolean(item));
+  return <>
+    <section className="welcome-row">
+      <div><h2>Hola, {organization.name} <span>👋</span></h2><p>Esto es lo que está pasando con tu publicidad hoy.</p></div>
+      <button className="run-button" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />} {running ? "Analizando…" : "Analizar ahora"}</button>
+    </section>
+
+    <section className="health-banner">
+      <div className="health-icon"><TrendingUp size={24} /></div>
+      <div className="health-copy"><span>ESTADO DE TU INVERSIÓN</span><h3>{returnValue >= 0 ? "Tu publicidad está generando retorno" : "Tu publicidad necesita atención"}</h3><p>Por cada $1 invertido, Meta reporta <b>${roas.toFixed(2)}</b> en ingresos.</p></div>
+      <div className="return-amount"><span>RETORNO DESPUÉS DE ADS</span><strong>{money(returnValue)}</strong>{revenueTrend !== null && <small>{revenueTrend >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />} {revenueTrend >= 0 ? "+" : ""}{revenueTrend.toFixed(1)}% ingresos vs. periodo anterior</small>}</div>
+      <div className="health-score"><svg viewBox="0 0 42 42"><circle cx="21" cy="21" r="16" /><circle className="progress" cx="21" cy="21" r="16" strokeDasharray={`${health} 100`} /></svg><b>{health}</b><span>Salud</span></div>
+    </section>
+
+    <section className="metric-grid">
+      <MetricCard label="Inversión" value={money(organization.spentThisMonth)} note={`${budgetPercent}% de ${money(organization.monthlyLimit)}`} trend={periodTrend(metrics, "spend")} icon={CircleDollarSign} color="violet" progress={budgetPercent} />
+      <MetricCard label="Ingresos atribuidos" value={money(organization.revenueThisMonth)} note="Reportado por Meta" trend={revenueTrend} icon={TrendingUp} color="green" />
+      <MetricCard label="ROAS" value={`${roas.toFixed(2)}×`} note={`Meta de la cuenta: ${target.toFixed(2)}×`} trend={periodTrend(metrics, "roas")} icon={CircleGauge} color="blue" />
+      <MetricCard label="Resultados" value={String(Math.round(results))} note={`${active} campañas activas`} trend={null} icon={Target} color="orange" />
+    </section>
+
+    <section className="dashboard-grid">
+      <div className="panel performance-panel">
+        <PanelHeader title="Rendimiento" subtitle="Ingresos e inversión publicitaria" action={<button className="ghost-select">Ingresos vs. inversión <ChevronDown size={14} /></button>} />
+        <div className="chart-legend"><span><i className="revenue" /> Ingresos</span><span><i className="spend" /> Inversión</span></div>
+        <div className="chart-wrap"><PerformanceChart metrics={metrics}/></div>
+      </div>
+      <div className="panel pulse-panel">
+        <PanelHeader title="Pulso IA" subtitle="Lectura rápida de tu cuenta" action={<span className="ai-live"><i /> EN VIVO</span>} />
+        <div className="pulse-score"><div className="pulse-orb"><Sparkles size={22} /></div><div><strong>{pulseTitle}</strong><p>Proyección del mes: {money(projection)} de {money(organization.monthlyLimit)}{overPace ? ". Los agentes ajustarán el ritmo." : "."}</p></div></div>
+        <div className="insight-list">
+          {insights.length ? insights.map((insight) => <div key={insight.title}><span className={`insight-icon ${insight.color}`}><insight.icon size={15}/></span><p><b>{insight.title}</b><small>{insight.detail}</small></p></div>)
+            : <div><span className="insight-icon violet"><Lightbulb size={15}/></span><p><b>Aún no hay suficientes datos</b><small>Ejecuta un análisis cuando tus campañas tengan gasto.</small></p></div>}
+        </div>
+        <button className="text-button" onClick={() => onNavigate("agents")}>Ver análisis completo <ChevronRight size={15}/></button>
+      </div>
+    </section>
+
+    <section className="dashboard-grid lower">
+      <div className="panel campaign-panel"><PanelHeader title="Campañas activas" subtitle={`${active} campañas generando resultados`} action={<button className="text-button" onClick={() => onNavigate("campaigns")}>Ver todas <ChevronRight size={14}/></button>} /><CampaignTable campaigns={campaigns.slice(0, 4)} compact /></div>
+      <div className="panel activity-panel"><PanelHeader title="Actividad de agentes" subtitle="Últimas decisiones y hallazgos" action={<button className="icon-plain"><MoreHorizontal size={18}/></button>} /><ActivityList activities={activities.slice(0, 4)} /></div>
+    </section>
+    {alerts.some((alert) => !alert.read) && <button className="floating-alert" onClick={() => onNavigate("alerts")}><Bell size={16}/><span>{alerts.filter((a) => !a.read).length} alertas requieren tu atención</span><ChevronRight size={15}/></button>}
+  </>;
+}
+
+function PerformanceChart({ metrics }: { metrics: SafeWorkspace["metrics"][string] }) {
+  const width = 720;
+  const height = 190;
+  const plot = { left: 52, right: 12, top: 10, bottom: 27 };
+  const chartWidth = width - plot.left - plot.right;
+  const chartHeight = height - plot.top - plot.bottom;
+  const maxValue = Math.max(20000, ...metrics.flatMap((point) => [point.revenue, point.spend]));
+  const roundMax = Math.ceil(maxValue / 5000) * 5000;
+  const points = (key: "revenue" | "spend") => metrics.map((point, index) => {
+    const x = plot.left + (index / Math.max(metrics.length - 1, 1)) * chartWidth;
+    const y = plot.top + chartHeight - (point[key] / roundMax) * chartHeight;
+    return [x, y] as const;
+  });
+  const revenuePoints = points("revenue");
+  const spendPoints = points("spend");
+  const line = (values: ReadonlyArray<readonly [number, number]>) => values.map(([x, y], index) => `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = (values: ReadonlyArray<readonly [number, number]>) => values.length ? `${line(values)} L${values.at(-1)?.[0]},${plot.top + chartHeight} L${values[0][0]},${plot.top + chartHeight} Z` : "";
+  const levels = [0, .25, .5, .75, 1];
+  return <svg className="performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gráfica de ingresos e inversión">
+    <defs><linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#765cf6" stopOpacity=".28"/><stop offset="100%" stopColor="#765cf6" stopOpacity="0"/></linearGradient><linearGradient id="spendGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#20b486" stopOpacity=".16"/><stop offset="100%" stopColor="#20b486" stopOpacity="0"/></linearGradient></defs>
+    {levels.map((level) => { const y = plot.top + chartHeight * (1 - level); return <g key={level}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="#e8e9ef" strokeDasharray="4 5"/><text x={plot.left - 9} y={y + 3} textAnchor="end" fill="#9697a1" fontSize="8">${Math.round((roundMax * level) / 1000)}k</text></g>; })}
+    <path d={area(revenuePoints)} fill="url(#revenueGradient)"/><path d={area(spendPoints)} fill="url(#spendGradient)"/><path d={line(revenuePoints)} fill="none" stroke="#765cf6" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/><path d={line(spendPoints)} fill="none" stroke="#20b486" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+    {revenuePoints.map(([x, y], index) => <circle key={`r-${index}`} cx={x} cy={y} r="2.4" fill="#fff" stroke="#765cf6" strokeWidth="1.5"/>)}
+    {metrics.map((point, index) => { const x = plot.left + (index / Math.max(metrics.length - 1, 1)) * chartWidth; return <text key={point.date} x={x} y={height - 6} textAnchor="middle" fill="#8b8d98" fontSize="8">{point.date}</text>; })}
+  </svg>;
+}
+
+function MetricCard({ label, value, note, trend, icon: Icon, color, progress }: { label: string; value: string; note: string; trend: number | null; icon: typeof Target; color: string; progress?: number }) {
+  return <div className="metric-card"><div className={`metric-icon ${color}`}><Icon size={19}/></div>{trend !== null && <div className={`metric-trend ${trend >= 0 ? "positive" : "negative"}`}>{trend >= 0 ? <ArrowUpRight size={13}/> : <ArrowDownRight size={13}/>}{trend >= 0 ? "+" : ""}{trend.toFixed(1)}%</div>}<span className="metric-label">{label}</span><strong>{value}</strong><p>{note}</p>{progress !== undefined && <div className="tiny-progress"><i style={{ width: `${progress}%` }}/></div>}</div>;
+}
+
+function PanelHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) {
+  return <div className="panel-header"><div><h3>{title}</h3><p>{subtitle}</p></div>{action}</div>;
+}
+
+function CampaignTable({ campaigns, compact = false, onToggle }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void }) {
+  if (!campaigns.length) return <div className="empty-panel"><Megaphone size={24}/><b>Aún no hay campañas</b><span>Crea la primera con ayuda de los agentes.</span></div>;
+  return <div className={`campaign-table ${compact ? "compact" : ""}`}>
+    <div className="campaign-row table-head"><span>CAMPAÑA</span><span>ESTADO</span><span>INVERSIÓN</span><span>RESULTADOS</span><span>ROAS</span>{!compact && <span>PRESUPUESTO</span>}<span /></div>
+    {campaigns.map((campaign) => <div className="campaign-row" key={campaign.id}>
+      <div className="campaign-name"><span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{campaign.channel}</small></p></div>
+      <div><span className={`status-badge ${campaign.status.toLowerCase()}`}><i />{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span></div>
+      <div className="number-cell"><b>{money(campaign.spend)}</b><small>este mes</small></div>
+      <div className="number-cell"><b>{campaign.results}</b><small>{campaign.costPerResult ? `${money(campaign.costPerResult)} c/u` : "Sin datos"}</small></div>
+      <div className="roas-cell"><b>{campaign.roas.toFixed(2)}×</b><small className={campaign.trend >= 0 ? "up" : "down"}>{campaign.trend >= 0 ? <ArrowUpRight size={12}/> : <ArrowDownRight size={12}/>} {Math.abs(campaign.trend)}%</small></div>
+      {!compact && <div className="number-cell"><b>{money(campaign.dailyBudget)}</b><small>por día</small></div>}
+      <button className="row-action" onClick={() => onToggle?.(campaign)} title={campaign.status === "ACTIVE" ? "Pausar" : "Activar"}>{campaign.status === "ACTIVE" ? <Pause size={15}/> : <Play size={15}/>}</button>
+    </div>)}
+  </div>;
+}
+
+function ActivityList({ activities }: { activities: SafeWorkspace["activities"] }) {
+  return <div className="activity-list">{activities.length ? activities.map((item) => {
+    const meta = agentMeta[item.agent]; const Icon = meta.icon;
+    return <div className="activity-item" key={item.id}><span className={`agent-icon ${meta.color}`}><Icon size={15}/></span><div><div><b>{item.agent}</b><small>{item.createdAt}</small></div><strong>{item.title}</strong><p>{item.detail}</p><em>{item.impact}</em></div></div>;
+  }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
+}
+
+function CampaignsView({ campaigns, onToggle, onCreate }: { campaigns: Campaign[]; onToggle: (campaign: Campaign) => void; onCreate: () => void }) {
+  const [query, setQuery] = useState("");
+  const filtered = campaigns.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
+  return <div className="page-stack">
+    <div className="page-intro"><div><h2>Todas tus campañas</h2><p>Supervisa resultados y deja que Pulso optimice la inversión.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Crear con IA</button></div>
+    <div className="summary-strip"><div><span>Campañas</span><b>{campaigns.length}</b></div><div><span>Activas</span><b className="green-text">{campaigns.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(campaigns.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(campaigns.reduce((sum, c) => sum + c.roas, 0) / Math.max(campaigns.length, 1)).toFixed(2)}×</b></div></div>
+    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} onToggle={onToggle}/></div>
+  </div>;
+}
+
+function AgentsView({ organization, activities, actions, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiProviderStatus | null }) {
+  const modeHint: Record<AutomationMode, string> = {
+    observer: "Modo Observador: los agentes solo sugieren cambios.",
+    copilot: "Modo Copiloto: cada cambio espera tu aprobación.",
+    autonomous: "Modo Autónomo: los cambios que pasan los guardrails se aplican solos.",
+    yolo: "Modo YOLO: los cambios que pasan los guardrails se aplican solos.",
+  };
+  return <div className="page-stack">
+    <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `${aiStatus.label.toUpperCase()} ACTIVO` : "MOTOR LOCAL"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
+    <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions}/></div>
+    <AiAssistantPanel organization={organization} status={aiStatus}/>
+    <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className="live-label"><i/> 6 OPERANDO</span></div>
+    <div className="agents-grid">{Object.entries(agentMeta).map(([name, meta]) => { const Icon = meta.icon; const last = actions.find((action) => action.agent === name); return <div className="agent-card" key={name}><div className="agent-card-top"><span className={`agent-big-icon ${meta.color}`}><Icon size={21}/></span><span className="agent-status"><i/> ACTIVO</span></div><h3>{name}</h3><p>{meta.description}</p><div className="agent-stat"><span>Última decisión</span><b suppressHydrationWarning>{last ? timeAgo(last.createdAt) : "Sin decisiones"}</b></div><button>Ver decisiones <ChevronRight size={14}/></button></div>; })}</div>
+    <div className="agents-lower"><div className="panel"><PanelHeader title="Cómo decide Pulso" subtitle="Proceso de una optimización autónoma"/><div className="decision-flow"><div><span>01</span><b>Observa</b><p>Recopila gasto, resultados y señales de fatiga.</p></div><ChevronRight size={17}/><div><span>02</span><b>Contrasta</b><p>Compara con objetivos y límites configurados.</p></div><ChevronRight size={17}/><div><span>03</span><b>Decide</b><p>El Supervisor valida impacto y riesgo.</p></div><ChevronRight size={17}/><div><span>04</span><b>Actúa</b><p>Ejecuta, registra y vuelve a medir.</p></div></div></div><div className="panel activity-panel expanded"><PanelHeader title="Decisiones recientes" subtitle="Registro explicable"/><ActivityList activities={activities.slice(0, 5)}/></div></div>
+  </div>;
+}
+
+function ApprovalsPanel({ actions, decidingId, onDecide }: { actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void }) {
+  const pending = actions.filter((action) => action.status === "pending");
+  return <div className="panel approvals-panel">
+    <PanelHeader title="Aprobaciones pendientes" subtitle={pending.length ? "Se revalidan contra tus guardrails al aprobarlas" : "No hay cambios esperando tu decisión"} action={<span className="count-pill">{pending.length} pendientes</span>}/>
+    {pending.length ? <div className="approval-list">{pending.map((action) => {
+      const Icon = agentMeta[action.agent].icon;
+      const busy = decidingId === action.id;
+      return <div className="approval-row" key={action.id}>
+        <span className={`agent-icon ${agentMeta[action.agent].color}`}><Icon size={15}/></span>
+        <div><strong>{capitalize(describeAction(action))}</strong><p>{action.reason}</p><em>{action.impact}{action.source === "ai" ? " · Propuesto por IA" : ""}</em></div>
+        <div className="approval-side">
+          {action.fromBudget !== undefined && action.toBudget !== undefined && <div className="budget-diff">{money(action.fromBudget)}<ChevronRight size={11}/><b>{money(action.toBudget)}</b></div>}
+          <div className="approval-actions">
+            <button className="secondary-button" disabled={Boolean(decidingId)} onClick={() => onDecide(action.id, "reject")}><X size={14}/> Rechazar</button>
+            <button className="primary-button" disabled={Boolean(decidingId)} onClick={() => onDecide(action.id, "approve")}>{busy ? <LoaderCircle className="spin" size={14}/> : <Check size={14}/>} Aprobar</button>
+          </div>
+        </div>
+      </div>;
+    })}</div> : <div className="empty-panel"><ShieldCheck size={22}/><b>Todo al día</b><span>En modo Copiloto las propuestas aparecerán aquí.</span></div>}
+  </div>;
+}
+
+function ActionLog({ actions }: { actions: AgentAction[] }) {
+  const history = actions.filter((action) => action.status !== "pending").slice(0, 20);
+  return <div className="panel action-log-panel">
+    <PanelHeader title="Registro de cambios" subtitle="Cada decisión con su razón y resultado"/>
+    {history.length ? <div className="action-log">{history.map((action) => <div className="action-log-row" key={action.id}>
+      <span className={`status-badge ${ACTION_STATUS[action.status].badge}`}><i/>{ACTION_STATUS[action.status].label}</span>
+      <div><strong>{capitalize(describeAction(action))}</strong><p>{action.reason}</p>{(action.guardrail || action.error) && <p className="guardrail-note">{action.guardrail || action.error}</p>}</div>
+      <small suppressHydrationWarning>{timeAgo(action.resolvedAt || action.createdAt)}</small>
+    </div>)}</div> : <div className="empty-panel"><Activity size={22}/><b>Sin cambios registrados</b><span>Ejecuta un análisis para ver las decisiones.</span></div>}
+  </div>;
+}
+
+function AiAssistantPanel({ organization, status }: { organization: Organization; status: AiProviderStatus | null }) {
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    if (!question.trim()) return;
+    setAsking(true); setAnswer(null);
+    try {
+      const response = await fetch("/api/ai/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: organization.id, question }) });
+      const result = await response.json();
+      setAnswer(response.ok ? result.answer : result.error);
+    } catch { setAnswer("No fue posible contactar al proveedor de IA."); }
+    finally { setAsking(false); }
+  }
+  const available = Boolean(status?.configured);
+  return <div className="panel assistant-panel"><div className="assistant-head"><div className="assistant-orb"><Sparkles size={18}/></div><div><span>ASESOR ESTRATÉGICO</span><h3>Pregúntale a Pulso sobre tu cuenta</h3><p>{available ? `${status?.label} · ${status?.model}` : status?.reason || "Configura un proveedor para activar el análisis generativo."}</p></div><span className={`provider-state ${available ? "ready" : "offline"}`}><i/>{available ? "CONECTADO" : "SIN CONFIGURAR"}</span></div><form className="assistant-input" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} disabled={!available || asking} placeholder={available ? "Ej. ¿Qué campaña debería escalar esta semana?" : "Agrega OPENAI_API_KEY para activar el asesor"}/><button className="primary-button" disabled={!available || asking}>{asking ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>} Preguntar</button></form>{answer && <div className="assistant-answer"><Bot size={17}/><p>{answer}</p></div>}<div className="assistant-suggestions"><button type="button" disabled={!available} onClick={() => setQuestion("¿Qué campaña tiene la mejor oportunidad de escalar hoy y por qué?")}>Qué escalar</button><button type="button" disabled={!available} onClick={() => setQuestion("¿Cuál es el riesgo principal de esta cuenta esta semana?")}>Detectar riesgo</button><button type="button" disabled={!available} onClick={() => setQuestion("Dame tres ideas de copy basadas en la mejor campaña.")}>Ideas de copy</button></div></div>;
+}
+
+function CreativesView({ creatives, onCreate }: { creatives: SafeWorkspace["creatives"]; onCreate: () => void }) {
+  return <div className="page-stack"><div className="page-intro"><div><h2>Laboratorio creativo</h2><p>Conceptos, copies y variantes producidas por el agente creativo.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Generar creativo</button></div>
+    <div className="creative-grid">{creatives.map((creative, index) => <div className="creative-card" key={creative.id}><div className={`creative-preview preview-${index % 3}`} style={{ background: `linear-gradient(145deg, ${creative.palette[0]}, ${creative.palette[1]})` }}><span className="preview-brand">PULSO / CONCEPTO</span><div className="preview-copy"><small>NUEVA COLECCIÓN</small><b>{creative.headline}</b><span>CONOCER MÁS →</span></div><div className="preview-shape one"/><div className="preview-shape two"/></div><div className="creative-info"><div><span className={`creative-status ${creative.status.toLowerCase()}`}>{creative.status}</span><span>{creative.format}</span><b><Sparkles size={13}/>{creative.score}</b></div><h3>{creative.title}</h3><p>{creative.primaryText}</p><button>Ver variantes <ChevronRight size={14}/></button></div></div>)}</div>
+    {creatives.length === 0 && <div className="panel empty-large"><ImageIcon size={30}/><h3>Aún no hay creativos</h3><p>Genera una campaña para crear el primer concepto.</p><button className="primary-button" onClick={onCreate}>Crear con IA</button></div>}
+  </div>;
+}
+
+function AlertsView({ alerts, onRead }: { alerts: SafeWorkspace["alerts"]; onRead: (id: string) => void }) {
+  return <div className="page-stack"><div className="page-intro"><div><h2>Centro de alertas</h2><p>Solo lo importante: anomalías, límites y oportunidades.</p></div><span className="count-pill">{alerts.filter((alert) => !alert.read).length} sin leer</span></div><div className="panel alerts-panel">{alerts.map((alert) => <button key={alert.id} className={`alert-row ${alert.read ? "read" : ""}`} onClick={() => onRead(alert.id)}><span className={`alert-severity ${alert.severity}`}>{alert.severity === "success" ? <Check size={18}/> : alert.severity === "info" ? <Lightbulb size={18}/> : <AlertCircle size={18}/>}</span><div><div><h3>{alert.title}</h3><small>{alert.createdAt}</small></div><p>{alert.detail}</p></div>{!alert.read && <i className="unread-dot"/>}<ChevronRight size={17}/></button>)}</div></div>;
+}
+
+function ConnectionsView({ data, syncing, onSync, setToast }: { data: SafeWorkspace; syncing: boolean; onSync: () => void; setToast: (message: string) => void }) {
+  const connected = data.metaConnection.status === "connected";
+  async function disconnect() { await fetch("/api/meta/disconnect", { method: "POST" }); window.location.reload(); }
+  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Conecta tus activos de Meta</h2><p>Pulso necesita acceso para leer métricas y ejecutar optimizaciones autorizadas.</p></div></div>
+    <div className="panel connection-card"><div className="meta-lockup"><span><Facebook size={25}/></span><span><Instagram size={25}/></span></div><div className="connection-main"><div><span className={`status-badge ${connected ? "active" : "draft"}`}><i/>{connected ? "Conectado" : data.metaConnection.status === "demo" ? "Demostración" : "Sin conectar"}</span><h2>Facebook + Instagram Ads</h2><p>Campañas, cuentas publicitarias, páginas, públicos, creativos e Insights.</p></div><div className="connection-actions">{connected ? <><button className="secondary-button" onClick={onSync} disabled={syncing}>{syncing ? <LoaderCircle className="spin" size={16}/> : <RefreshCcw size={16}/>} Sincronizar</button><button className="danger-text" onClick={disconnect}>Desconectar</button></> : <a className="primary-button" href="/api/meta/connect"><Zap size={16}/> Conectar con Meta</a>}</div></div>
+      <div className="permission-grid"><div><Eye size={17}/><span><b>Lectura</b><small>Campañas y métricas</small></span><Check size={15}/></div><div><SlidersHorizontal size={17}/><span><b>Administración</b><small>Presupuestos y estados</small></span><Check size={15}/></div><div><ImageIcon size={17}/><span><b>Creativos</b><small>Facebook e Instagram</small></span><Check size={15}/></div></div>
+      {connected && <div className="connected-details"><span><b>Usuario de Meta</b>{data.metaConnection.userName}</span><span><b>Cuentas encontradas</b>{data.organizations.length}</span><span><b>Última sincronización</b>{data.metaConnection.lastSyncAt ? new Date(data.metaConnection.lastSyncAt).toLocaleString("es-MX") : "—"}</span></div>}
+    </div>
+    {!connected && <div className="config-note"><ShieldCheck size={20}/><div><b>Tus credenciales no pasan por el navegador</b><p>La autorización se realiza en Meta. Pulso cifra el token antes de guardarlo y nunca solicita tu contraseña.</p></div></div>}
+    <div className="panel setup-card"><PanelHeader title="Lista para conectar" subtitle="Verifica estos pasos en Meta for Developers"/><div className="setup-steps"><div className="done"><span><Check size={15}/></span><p><b>Cuenta de negocio creada</b><small>Ya nos confirmaste este paso.</small></p></div><div className="done"><span><Check size={15}/></span><p><b>Usuario tester agregado</b><small>Ya nos confirmaste este paso.</small></p></div><div><span>3</span><p><b>Variables del servidor</b><small>Agrega App ID, App Secret y la llave de cifrado.</small></p><button onClick={() => setToast("Consulta .env.example para copiar las variables necesarias.")}>Ver configuración</button></div><div><span>4</span><p><b>URI de redirección</b><small>Registra /api/meta/callback en Facebook Login.</small></p></div></div></div>
+  </div>;
+}
+
+function SettingsView({ organization, onSaved, aiStatus }: { organization: Organization; onSaved: () => void; aiStatus: AiProviderStatus | null }) {
+  const [limit, setLimit] = useState(String(organization.monthlyLimit));
+  const [value, setValue] = useState(String(organization.resultValue));
+  const [roasTarget, setRoasTarget] = useState(String(targetRoas(organization)));
+  const [saving, setSaving] = useState(false);
+  async function save(event: FormEvent) { event.preventDefault(); setSaving(true); await fetch("/api/workspace", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "organization", organizationId: organization.id, monthlyLimit: Number(limit), targetRoas: Number(roasTarget), resultValue: Number(value) }) }); setSaving(false); onSaved(); }
+  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><div className="panel ai-settings"><div><span>PROVEEDOR DE IA</span><h3>{aiStatus?.label || "Comprobando proveedor…"}</h3><p>{aiStatus?.configured ? `Modelo activo: ${aiStatus.model}. La clave se lee solo en el servidor.` : aiStatus?.reason || "No hay un proveedor configurado."}</p></div><div><span className={`provider-state ${aiStatus?.configured ? "ready" : "offline"}`}><i/>{aiStatus?.configured ? "CONECTADO" : "PENDIENTE"}</span><code>{aiStatus?.configured ? `AI_PROVIDER=${aiStatus.id}` : "AI_PROVIDER=openai"}</code></div><small>Proveedores preparados: OpenAI, compatible con OpenAI, Gemini y adaptador propio. La configuración se hace mediante variables de entorno, nunca desde el navegador.</small></div><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/><label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
+}
+
+function CampaignModal({ organization, defaultPublish, onClose, onCreated }: { organization: Organization; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
+  const [step, setStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [form, setForm] = useState({ offer: "", objective: organization.objective, destination: "", dailyBudget: 500, location: "México", audience: "La IA decide", publish: defaultPublish });
+  const estimatedMonth = form.dailyBudget * 30;
+  async function submit() { setSubmitting(true); setSubmitError(null); const response = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, organizationId: organization.id }) }); const result = await response.json(); setSubmitting(false); if (response.ok) onCreated(result.message || "Campaña y creativo generados."); else setSubmitError(result.error || "No fue posible crear la campaña."); }
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal campaign-modal"><div className="modal-head"><div><span>CREADOR CON IA</span><h2>Nueva campaña</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="stepper"><div className={step >= 1 ? "active" : ""}><span>{step > 1 ? <Check size={13}/> : "1"}</span>Objetivo</div><i/><div className={step >= 2 ? "active" : ""}><span>2</span>Estrategia</div><i/><div className={step >= 3 ? "active" : ""}><span>3</span>Confirmar</div></div>
+    <div className="modal-body">{step === 1 && <div className="form-step"><div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus placeholder="Ej. Colección de muebles de otoño" value={form.offer} onChange={(e) => setForm({ ...form, offer: e.target.value })}/><small>Describe el producto, servicio u oferta en una frase.</small></div><div className="field"><label>Objetivo principal</label><div className="objective-grid">{["Ventas", "Prospectos", "Mensajes"].map((objective) => <button key={objective} className={form.objective === objective ? "selected" : ""} onClick={() => setForm({ ...form, objective: objective as typeof form.objective })}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}</b><small>{objective === "Ventas" ? "Compras en tu sitio" : objective === "Prospectos" ? "Formularios de Meta" : "WhatsApp o Messenger"}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div></div><div className="field"><label>Destino</label><input placeholder="https://tusitio.mx o número de WhatsApp" value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })}/></div></div>}
+    {step === 2 && <div className="form-step"><div className="two-fields"><div className="field"><label>Presupuesto diario</label><div className="money-input"><b>$</b><input type="number" min="100" value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })}/><em>MXN</em></div></div><div className="field"><label>Ubicación</label><input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}/></div></div><div className="field"><label>Público</label><div className="ai-choice"><span><Sparkles size={18}/></span><div><b>Dejar que el agente encuentre el público</b><p>Probará audiencias amplias, intereses y señales de tus activos.</p></div><Check size={17}/></div></div><div className="estimate-box"><Gauge size={20}/><div><b>Proyección de inversión</b><p>{money(estimatedMonth)} al mes, dentro de tu límite de {money(organization.monthlyLimit)}.</p></div><span className={estimatedMonth <= organization.monthlyLimit ? "safe" : "over"}>{estimatedMonth <= organization.monthlyLimit ? "Dentro del límite" : "Supera el límite"}</span></div></div>}
+    {step === 3 && <div className="form-step review-step"><div className="ai-building"><span><WandSparkles size={24}/></span><div><h3>El equipo de agentes hará el resto</h3><p>Creará estructura, audiencia, copies, concepto visual y variantes para Facebook e Instagram.</p></div></div><div className="review-grid"><span><small>OFERTA</small><b>{form.offer}</b></span><span><small>OBJETIVO</small><b>{form.objective}</b></span><span><small>INVERSIÓN DIARIA</small><b>{money(form.dailyBudget)}</b></span><span><small>UBICACIÓN</small><b>{form.location}</b></span></div><label className="publish-toggle"><input type="checkbox" checked={form.publish} onChange={(event) => setForm({ ...form, publish: event.target.checked })}/><span/><div><b>Publicar automáticamente al terminar</b><small>Disponible porque el modo {MODE_LABELS[organization.mode]} está activo.</small></div></label><div className="safety-note"><ShieldCheck size={17}/> El límite mensual y la variación máxima de 20% siempre se respetan.</div></div>}</div>
+    {submitError && <div className="modal-error"><AlertCircle size={15}/>{submitError}</div>}<div className="modal-footer"><button className="secondary-button" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? "Cancelar" : "Atrás"}</button>{step < 3 ? <button className="primary-button" disabled={(step === 1 && (!form.offer || !form.destination)) || (step === 2 && estimatedMonth > organization.monthlyLimit)} onClick={() => setStep(step + 1)}>Continuar <ChevronRight size={16}/></button> : <button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={17}/> : <Rocket size={17}/>} {form.publish ? "Crear y lanzar" : "Crear borrador"}</button>}</div></div></div>;
+}
+
+function ModeModal({ current, onClose, onSelect }: { current: AutomationMode; onClose: () => void; onSelect: (mode: AutomationMode) => void }) {
+  const descriptions: Record<AutomationMode, string> = { observer: "Solo monitorea y explica hallazgos.", copilot: "Prepara cambios y espera tu aprobación.", autonomous: "Ejecuta optimizaciones dentro de tus límites.", yolo: "Crea y publica sin pedir aprobación." };
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal mode-modal"><div className="modal-head"><div><span>NIVEL DE AUTONOMÍA</span><h2>¿Cómo debe trabajar Pulso?</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="mode-list">{(["observer", "copilot", "autonomous", "yolo"] as AutomationMode[]).map((mode) => <button key={mode} className={`${mode} ${current === mode ? "selected" : ""}`} onClick={() => onSelect(mode)}><span className="mode-radio">{current === mode && <Check size={14}/>}</span><div><b>{MODE_LABELS[mode]}{mode === "autonomous" && <em>RECOMENDADO</em>}</b><p>{descriptions[mode]}</p></div>{mode === "yolo" ? <Zap size={19}/> : mode === "autonomous" ? <Bot size={19}/> : mode === "copilot" ? <Lightbulb size={19}/> : <Eye size={19}/>}</button>)}</div><div className="modal-hint"><ShieldCheck size={17}/> Los límites duros permanecen activos en todos los modos.</div></div></div>;
+}
