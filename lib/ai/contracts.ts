@@ -1,12 +1,9 @@
 import type { Ad, AgentAction, AgentActionType, AgentName, Campaign, Organization } from "@/lib/types";
 
-export type AiProviderId = "local" | "openai" | "openai-compatible" | "gemini" | "custom";
-
-export interface AiProviderStatus {
-  id: AiProviderId;
-  label: string;
-  model: string | null;
+/** Whether OpenAI can be used for this workspace, and why not. */
+export interface AiStatus {
   configured: boolean;
+  model: string | null;
   reason?: string;
 }
 
@@ -42,10 +39,4 @@ export interface AiAnalysis {
   summary: string;
   recommendations: AiRecommendation[];
   actions: AiActionProposal[];
-}
-
-export interface AiProvider {
-  status(): AiProviderStatus;
-  analyze(context: AiCampaignContext): Promise<AiAnalysis>;
-  ask(context: AiCampaignContext, question: string): Promise<string>;
 }

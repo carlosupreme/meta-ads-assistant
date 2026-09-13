@@ -10,11 +10,20 @@ import {
 } from "lucide-react";
 import type { AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
-import type { AiProviderStatus } from "@/lib/ai/contracts";
+import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, describeAction, projectedMonthSpend, targetRoas } from "@/lib/optimizer";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 
 type Decision = "approve" | "reject";
+
+async function fetchAiStatus(): Promise<{ status: AiStatus; models: string[] } | null> {
+  try {
+    const response = await fetch("/api/ai/status", { cache: "no-store" });
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
 
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -98,7 +107,8 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const [running, setRunning] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [aiStatus, setAiStatus] = useState<AiProviderStatus | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiModels, setAiModels] = useState<string[]>([]);
   const organization = data.organizations.find((item) => item.id === organizationId) || data.organizations[0];
   const campaigns = data.campaigns.filter((item) => item.organizationId === organization?.id);
   const activities = data.activities.filter((item) => item.organizationId === organization?.id);
@@ -125,10 +135,11 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   }, []);
 
   useEffect(() => {
-    fetch("/api/ai/status", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null)
-      .then((status) => status && setAiStatus(status))
-      .catch(() => setAiStatus(null));
+    fetchAiStatus().then((result) => {
+      if (!result) return;
+      setAiStatus(result.status);
+      setAiModels(result.models);
+    });
   }, []);
 
   useEffect(() => {
@@ -220,7 +231,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     connections: <ConnectionsView data={data} syncing={syncing} onSync={syncMeta} setToast={setToast} />,
-    settings: <SettingsView key={organization.id} organization={organization} aiStatus={aiStatus} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
+    settings: <SettingsView key={organization.id} organization={organization} aiStatus={aiStatus} aiModels={aiModels} onAiModelSaved={async (message) => { const result = await fetchAiStatus(); if (result) { setAiStatus(result.status); setAiModels(result.models); } setToast(message); }} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
   };
 
   return (
@@ -424,7 +435,7 @@ function CampaignsView({ campaigns, onToggle, onCreate }: { campaigns: Campaign[
   </div>;
 }
 
-function AgentsView({ organization, activities, actions, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiProviderStatus | null }) {
+function AgentsView({ organization, activities, actions, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
   const modeHint: Record<AutomationMode, string> = {
     observer: "Modo Observador: los agentes solo sugieren cambios.",
     copilot: "Modo Copiloto: cada cambio espera tu aprobación.",
@@ -432,7 +443,7 @@ function AgentsView({ organization, activities, actions, decidingId, onDecide, r
     yolo: "Modo YOLO: los cambios que pasan los guardrails se aplican solos.",
   };
   return <div className="page-stack">
-    <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `${aiStatus.label.toUpperCase()} ACTIVO` : "MOTOR LOCAL"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
+    <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
     <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions}/></div>
     <AiAssistantPanel organization={organization} status={aiStatus}/>
     <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className="live-label"><i/> 6 OPERANDO</span></div>
@@ -475,7 +486,7 @@ function ActionLog({ actions }: { actions: AgentAction[] }) {
   </div>;
 }
 
-function AiAssistantPanel({ organization, status }: { organization: Organization; status: AiProviderStatus | null }) {
+function AiAssistantPanel({ organization, status }: { organization: Organization; status: AiStatus | null }) {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -491,7 +502,7 @@ function AiAssistantPanel({ organization, status }: { organization: Organization
     finally { setAsking(false); }
   }
   const available = Boolean(status?.configured);
-  return <div className="panel assistant-panel"><div className="assistant-head"><div className="assistant-orb"><Sparkles size={18}/></div><div><span>ASESOR ESTRATÉGICO</span><h3>Pregúntale a Pulso sobre tu cuenta</h3><p>{available ? `${status?.label} · ${status?.model}` : status?.reason || "Configura un proveedor para activar el análisis generativo."}</p></div><span className={`provider-state ${available ? "ready" : "offline"}`}><i/>{available ? "CONECTADO" : "SIN CONFIGURAR"}</span></div><form className="assistant-input" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} disabled={!available || asking} placeholder={available ? "Ej. ¿Qué campaña debería escalar esta semana?" : "Agrega OPENAI_API_KEY para activar el asesor"}/><button className="primary-button" disabled={!available || asking}>{asking ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>} Preguntar</button></form>{answer && <div className="assistant-answer"><Bot size={17}/><p>{answer}</p></div>}<div className="assistant-suggestions"><button type="button" disabled={!available} onClick={() => setQuestion("¿Qué campaña tiene la mejor oportunidad de escalar hoy y por qué?")}>Qué escalar</button><button type="button" disabled={!available} onClick={() => setQuestion("¿Cuál es el riesgo principal de esta cuenta esta semana?")}>Detectar riesgo</button><button type="button" disabled={!available} onClick={() => setQuestion("Dame tres ideas de copy basadas en la mejor campaña.")}>Ideas de copy</button></div></div>;
+  return <div className="panel assistant-panel"><div className="assistant-head"><div className="assistant-orb"><Sparkles size={18}/></div><div><span>ASESOR ESTRATÉGICO</span><h3>Pregúntale a Pulso sobre tu cuenta</h3><p>{available ? `OpenAI · ${status?.model}` : status?.reason || "Elige un modelo de OpenAI en Configuración."}</p></div><span className={`provider-state ${available ? "ready" : "offline"}`}><i/>{available ? "CONECTADO" : "SIN CONFIGURAR"}</span></div><form className="assistant-input" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} disabled={!available || asking} placeholder={available ? "Ej. ¿Qué campaña debería escalar esta semana?" : "Elige un modelo en Configuración para activar el asesor"}/><button className="primary-button" disabled={!available || asking}>{asking ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>} Preguntar</button></form>{answer && <div className="assistant-answer"><Bot size={17}/><p>{answer}</p></div>}<div className="assistant-suggestions"><button type="button" disabled={!available} onClick={() => setQuestion("¿Qué campaña tiene la mejor oportunidad de escalar hoy y por qué?")}>Qué escalar</button><button type="button" disabled={!available} onClick={() => setQuestion("¿Cuál es el riesgo principal de esta cuenta esta semana?")}>Detectar riesgo</button><button type="button" disabled={!available} onClick={() => setQuestion("Dame tres ideas de copy basadas en la mejor campaña.")}>Ideas de copy</button></div></div>;
 }
 
 function CreativesView({ creatives, onCreate }: { creatives: SafeWorkspace["creatives"]; onCreate: () => void }) {
@@ -518,13 +529,39 @@ function ConnectionsView({ data, syncing, onSync, setToast }: { data: SafeWorksp
   </div>;
 }
 
-function SettingsView({ organization, onSaved, aiStatus }: { organization: Organization; onSaved: () => void; aiStatus: AiProviderStatus | null }) {
+function AiModelPanel({ status, models, onSaved }: { status: AiStatus | null; models: string[]; onSaved: (message: string) => void }) {
+  const [choice, setChoice] = useState("");
+  const [saving, setSaving] = useState(false);
+  const selected = choice || status?.model || "";
+  const options = status?.model && !models.includes(status.model) ? [status.model, ...models] : models;
+  async function save() {
+    setSaving(true);
+    const response = await fetch("/api/workspace", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ai-model", model: selected }) });
+    const result = await response.json();
+    setSaving(false);
+    onSaved(response.ok ? `Modelo ${selected} guardado.` : result.error || "No fue posible guardar el modelo.");
+  }
+  return <div className="panel ai-settings">
+    <div><span>MODELO DE IA · OPENAI</span><h3>{status?.model || "Sin modelo elegido"}</h3><p>{status?.configured ? "Los agentes y el asesor usan este modelo en tu workspace." : status?.reason || "Comprobando OpenAI…"}</p></div>
+    <div><span className={`provider-state ${status?.configured ? "ready" : "offline"}`}><i/>{status?.configured ? "ACTIVO" : "PENDIENTE"}</span></div>
+    <div className="ai-model-picker">
+      <select value={selected} onChange={(event) => setChoice(event.target.value)} disabled={!options.length || saving}>
+        <option value="" disabled>{options.length ? "Elige un modelo" : "Sin modelos disponibles"}</option>
+        {options.map((id) => <option key={id} value={id}>{id}</option>)}
+      </select>
+      <button className="primary-button" type="button" onClick={save} disabled={!selected || selected === status?.model || saving}>{saving ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Guardar modelo</button>
+    </div>
+    <small>La llave de OpenAI vive solo en el servidor. Los guardrails siguen siendo la autoridad final sobre cualquier cambio que proponga el modelo.</small>
+  </div>;
+}
+
+function SettingsView({ organization, onSaved, aiStatus, aiModels, onAiModelSaved }: { organization: Organization; onSaved: () => void; aiStatus: AiStatus | null; aiModels: string[]; onAiModelSaved: (message: string) => void }) {
   const [limit, setLimit] = useState(String(organization.monthlyLimit));
   const [value, setValue] = useState(String(organization.resultValue));
   const [roasTarget, setRoasTarget] = useState(String(targetRoas(organization)));
   const [saving, setSaving] = useState(false);
   async function save(event: FormEvent) { event.preventDefault(); setSaving(true); await fetch("/api/workspace", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "organization", organizationId: organization.id, monthlyLimit: Number(limit), targetRoas: Number(roasTarget), resultValue: Number(value) }) }); setSaving(false); onSaved(); }
-  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><div className="panel ai-settings"><div><span>PROVEEDOR DE IA</span><h3>{aiStatus?.label || "Comprobando proveedor…"}</h3><p>{aiStatus?.configured ? `Modelo activo: ${aiStatus.model}. La clave se lee solo en el servidor.` : aiStatus?.reason || "No hay un proveedor configurado."}</p></div><div><span className={`provider-state ${aiStatus?.configured ? "ready" : "offline"}`}><i/>{aiStatus?.configured ? "CONECTADO" : "PENDIENTE"}</span><code>{aiStatus?.configured ? `AI_PROVIDER=${aiStatus.id}` : "AI_PROVIDER=openai"}</code></div><small>Proveedores preparados: OpenAI, compatible con OpenAI, Gemini y adaptador propio. La configuración se hace mediante variables de entorno, nunca desde el navegador.</small></div><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/><label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
+  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><AiModelPanel status={aiStatus} models={aiModels} onSaved={onAiModelSaved}/><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/><label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
 }
 
 function CampaignModal({ organization, defaultPublish, onClose, onCreated }: { organization: Organization; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {

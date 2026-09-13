@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { listChatModels } from "@/lib/ai/openai";
 import { requireApiSession } from "@/lib/auth";
 import { updateMetaObject } from "@/lib/meta";
 import { toSafeWorkspace } from "@/lib/safe-workspace";
@@ -22,6 +23,7 @@ const updateSchema = z.discriminatedUnion("action", [
     targetRoas: z.number().min(0.5).max(50).optional(),
     resultValue: z.number().nonnegative().optional(),
   }),
+  z.object({ action: z.literal("ai-model"), model: z.string().min(1).max(100) }),
   z.object({ action: z.literal("alert-read"), alertId: z.string() }),
   z.object({ action: z.literal("campaign-status"), campaignId: z.string(), status: z.enum(["ACTIVE", "PAUSED"]) }),
 ]);
@@ -32,6 +34,13 @@ export async function PATCH(request: Request) {
   const parsed = updateSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   const input = parsed.data;
+
+  if (input.action === "ai-model") {
+    // Only models this API key can actually call are accepted.
+    const models = await listChatModels().catch(() => null);
+    if (!models) return NextResponse.json({ error: "No fue posible consultar los modelos de OpenAI." }, { status: 502 });
+    if (!models.includes(input.model)) return NextResponse.json({ error: "Ese modelo no está disponible para esta llave de OpenAI." }, { status: 400 });
+  }
 
   if (input.action === "campaign-status") {
     // Mirror manual toggles in Meta; otherwise the next sync would silently revert them.
@@ -60,6 +69,7 @@ export async function PATCH(request: Request) {
         }
         : organization);
     }
+    if (input.action === "ai-model") current.aiModel = input.model;
     if (input.action === "alert-read") current.alerts = current.alerts.map((alert) => alert.id === input.alertId ? { ...alert, read: true } : alert);
     if (input.action === "campaign-status") current.campaigns = current.campaigns.map((campaign) => campaign.id === input.campaignId ? { ...campaign, status: input.status, updatedAt: "Ahora" } : campaign);
     return current;

@@ -12,7 +12,7 @@ Web app para monitorear y optimizar Facebook e Instagram Ads con agentes autóno
 - Modos Observador, Copiloto, Autónomo y YOLO por negocio.
 - Motor de optimización con límites duros y explicación de cada decisión.
 - Centro de alertas y registro de actividad de seis agentes.
-- Capa de IA intercambiable: OpenAI, proveedores OpenAI-compatible y adaptadores futuros.
+- IA generativa con OpenAI; cada usuario elige su modelo.
 - Creador guiado de campañas y conceptos creativos.
 - Endpoint de monitoreo programable en `/api/cron/monitor`.
 - Persistencia en Supabase/PostgreSQL con RLS y control de concurrencia.
@@ -53,30 +53,19 @@ Cómo funciona:
 
 `SUPABASE_SECRET_KEY` omite RLS: nunca le agregues el prefijo `NEXT_PUBLIC_` ni la uses desde el navegador. El inicio de sesión ocurre en server actions, así que tampoco la llave publicable necesita llegar al navegador.
 
-## IA generativa y proveedores
+## IA generativa con OpenAI
 
-Pulso mantiene el motor de seguridad local como autoridad final: los límites mensuales, la variación máxima de 20% y el bloqueo de borrado de campañas no dependen de un modelo de IA. El proveedor generativo únicamente recibe métricas y contexto de campañas; entrega análisis, recomendaciones y respuestas para el asesor conversacional.
+Pulso usa OpenAI como único proveedor. El motor de guardrails sigue siendo la autoridad final: los límites mensuales, la variación máxima de 20% y el bloqueo de borrado no dependen del modelo. OpenAI solo recibe métricas y contexto de campañas; entrega análisis, hasta tres acciones estructuradas y respuestas para el asesor conversacional.
 
-Para habilitar OpenAI agrega en `.env.local`:
+1. Agrega la llave en el servidor (`.env.local` o Vercel):
 
-```bash
-AI_PROVIDER=openai
-OPENAI_API_KEY=tu_api_key
-OPENAI_MODEL=gpt-6-astra
-```
+   ```bash
+   OPENAI_API_KEY=sk-...
+   ```
 
-Después reinicia el servidor. En **Agentes IA** aparecerá OpenAI como conectado y podrás preguntar sobre la cuenta seleccionada. Pulso usa la Responses API solo desde el servidor y desactiva el almacenamiento de las respuestas.
+2. Cada usuario elige su modelo en **Configuración → Modelo de IA**. La lista se obtiene de la API de OpenAI con esa llave y el servidor rechaza modelos que no aparezcan en ella. Mientras no haya modelo elegido, los agentes trabajan solo con el motor de reglas.
 
-La capa es intercambiable. Para un endpoint compatible con OpenAI:
-
-```bash
-AI_PROVIDER=openai-compatible
-AI_BASE_URL=https://tu-proveedor.example/v1
-AI_API_KEY=tu_api_key
-AI_MODEL=nombre-del-modelo
-```
-
-Gemini y un proveedor propio ya tienen contrato y estado visibles en la interfaz; únicamente falta añadir sus clientes concretos en `lib/ai/`, sin cambiar agentes, rutas ni interfaz.
+Pulso llama la Responses API únicamente desde el servidor y desactiva el almacenamiento de las respuestas (`store: false`).
 
 ## Conectar Meta
 
@@ -105,7 +94,7 @@ La versión de Graph API se configura mediante `META_GRAPH_VERSION`; el valor in
 Cada ciclo sigue el mismo recorrido:
 
 1. **Sincroniza** campañas, conjuntos, anuncios e Insights (el cron lo hace antes de decidir).
-2. **Planea** con reglas deterministas (`lib/optimizer.ts`) y, si hay proveedor de IA, suma hasta tres acciones estructuradas propuestas por el modelo.
+2. **Planea** con reglas deterministas (`lib/optimizer.ts`) y, si el usuario eligió un modelo de OpenAI, suma hasta tres acciones estructuradas propuestas por el modelo.
 3. **Valida** cada propuesta con los guardrails. Nada, ni reglas, ni IA, ni aprobaciones manuales, los evita.
 4. **Resuelve según el modo**: Observador solo sugiere; Copiloto deja la propuesta en **Agentes IA → Aprobaciones pendientes** (expira en 48 h); Autónomo y YOLO ejecutan en Meta.
 5. **Registra** razón, impacto, resultado o motivo del bloqueo en el registro de cambios.
@@ -164,7 +153,7 @@ El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cr
    | `META_APP_ID`, `META_APP_SECRET`, `META_GRAPH_VERSION` | Desde tu app de Meta |
    | `META_TOKEN_ENCRYPTION_KEY` | Un valor fijo; si cambia, los tokens de Meta guardados dejan de descifrarse |
    | `CRON_SECRET` | `openssl rand -hex 32` |
-   | `AI_PROVIDER` y sus llaves | Igual que en `.env` |
+   | `OPENAI_API_KEY` | Tu llave de OpenAI |
 
    `NEXT_PUBLIC_APP_URL` se fija al compilar: si la agregas después del primer despliegue, vuelve a desplegar.
 4. **Meta**: en Facebook Login → Settings agrega `https://tu-app.vercel.app/api/meta/callback` a las URI de redirección OAuth válidas.

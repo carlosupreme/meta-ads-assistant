@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { buildAiContext, getAiProvider } from "@/lib/ai/provider";
+import { aiStatus, askPulso, buildAiContext } from "@/lib/ai/openai";
 import { requireApiSession } from "@/lib/auth";
 import { readWorkspace } from "@/lib/store";
 
@@ -11,19 +11,18 @@ export async function POST(request: Request) {
   if (session instanceof NextResponse) return session;
   const parsed = schema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "Escribe una pregunta de al menos tres caracteres." }, { status: 400 });
-  const provider = getAiProvider();
-  const status = provider.status();
-  if (!status.configured) return NextResponse.json({ error: status.reason || "No hay proveedor de IA configurado." }, { status: 503 });
   try {
     const workspace = await readWorkspace(session.workspaceId);
+    const status = aiStatus(workspace.aiModel);
+    if (!status.configured || !status.model) return NextResponse.json({ error: status.reason }, { status: 503 });
     const organization = workspace.organizations.find((item) => item.id === parsed.data.organizationId);
     if (!organization) return NextResponse.json({ error: "Negocio no encontrado." }, { status: 404 });
-    const answer = await provider.ask(buildAiContext(
+    const answer = await askPulso(status.model, buildAiContext(
       organization,
       workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id),
       workspace.ads.filter((ad) => ad.organizationId === organization.id),
     ), parsed.data.question);
-    return NextResponse.json({ answer, provider: status });
+    return NextResponse.json({ answer });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "La IA no pudo responder." }, { status: 502 });
   }

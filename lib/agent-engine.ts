@@ -1,6 +1,6 @@
 import { updateMetaObject } from "./meta";
 import type { AgentAction, AgentActivity, WorkspaceData } from "./types";
-import { buildAiContext, getAiProvider } from "./ai/provider";
+import { aiStatus, analyzeCampaigns, buildAiContext } from "./ai/openai";
 import {
   actionsFromAi, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun, type AgentRunOutcome,
 } from "./optimizer";
@@ -17,7 +17,7 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
   const organizations = organizationId
     ? workspace.organizations.filter((organization) => organization.id === organizationId)
     : workspace.organizations;
-  const aiProvider = getAiProvider();
+  const aiModel = aiStatus(workspace.aiModel).configured ? workspace.aiModel : undefined;
   const actions: AgentAction[] = [];
   const insights: AgentActivity[] = [];
   let aiHeadline: string | undefined;
@@ -27,10 +27,10 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
     if (!campaigns.some((campaign) => campaign.status === "ACTIVE")) continue;
     const proposals = planRuleActions(workspace, organization, now);
 
-    if (aiProvider.status().configured) {
+    if (aiModel) {
       try {
         const ads = workspace.ads.filter((ad) => ad.organizationId === organization.id);
-        const analysis = await aiProvider.analyze(buildAiContext(organization, campaigns, ads, proposals));
+        const analysis = await analyzeCampaigns(aiModel, buildAiContext(organization, campaigns, ads, proposals));
         insights.push(...analysis.recommendations.map((recommendation): AgentActivity => ({
           id: `ai-${globalThis.crypto.randomUUID()}`,
           organizationId: organization.id,

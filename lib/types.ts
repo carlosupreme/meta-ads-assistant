@@ -177,6 +177,8 @@ export interface WorkspaceData {
   creatives: Creative[];
   actions: AgentAction[];
   budgetChanges: BudgetChange[];
+  /** OpenAI model chosen by the workspace owner; generative AI stays off until one is picked. */
+  aiModel?: string;
   /** Prevents the cron and a manual run from optimizing the same account at once. */
   agentLock?: { token: string; expiresAt: string };
 }
