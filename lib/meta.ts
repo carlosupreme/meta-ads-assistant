@@ -324,45 +324,130 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
   };
 }
 
+export type MessagingApp = "WHATSAPP" | "MESSENGER";
+
 export interface MetaCampaignInput {
+  objective: Organization["objective"];
   offer: string;
-  destination: string;
+  headline: string;
+  primaryText: string;
   dailyBudget: number;
   publish: boolean;
+  /** Website for sales campaigns. */
+  destination?: string;
+  /** Instant form for lead campaigns. */
+  leadFormId?: string;
+  /** Conversation app for message campaigns. */
+  messagingApp?: MessagingApp;
+  image: { base64: string };
 }
 
-export async function createMetaSalesCampaign(
+export interface CreatedMetaCampaign {
+  campaignId: string;
+  adSetId: string;
+  status: "ACTIVE" | "PAUSED";
+}
+
+export const AD_SET_NAME = "Pulso · México · Audiencia Advantage+";
+
+const CAMPAIGN_OBJECTIVES: Record<Organization["objective"], string> = {
+  Ventas: "OUTCOME_SALES",
+  Prospectos: "OUTCOME_LEADS",
+  Mensajes: "OUTCOME_ENGAGEMENT",
+};
+
+interface ObjectiveSetup {
+  adSet: Record<string, string>;
+  link: string;
+  callToAction: { type: string; value: Record<string, string> };
+}
+
+/** Objective-specific ad set and creative fields. Throws before anything is created in Meta. */
+function objectiveSetup(organization: Organization, input: MetaCampaignInput): ObjectiveSetup {
+  if (input.objective === "Ventas") {
+    if (!organization.pixelId) throw new Error("Selecciona un Pixel/dataset con el evento Purchase antes de publicar");
+    let destination: URL;
+    try {
+      destination = new URL(input.destination ?? "");
+    } catch {
+      throw new Error("Para campañas de ventas, el destino debe ser una URL válida");
+    }
+    return {
+      adSet: {
+        optimization_goal: "OFFSITE_CONVERSIONS",
+        destination_type: "WEBSITE",
+        promoted_object: JSON.stringify({ pixel_id: organization.pixelId, custom_event_type: "PURCHASE" }),
+      },
+      link: destination.toString(),
+      callToAction: { type: "SHOP_NOW", value: { link: destination.toString() } },
+    };
+  }
+  const pagePromotion = JSON.stringify({ page_id: organization.pageId });
+  if (input.objective === "Prospectos") {
+    if (!input.leadFormId) throw new Error("Elige un formulario instantáneo antes de publicar");
+    return {
+      adSet: { optimization_goal: "LEAD_GENERATION", destination_type: "ON_AD", promoted_object: pagePromotion },
+      link: "http://fb.me/",
+      callToAction: { type: "SIGN_UP", value: { lead_gen_form_id: input.leadFormId } },
+    };
+  }
+  if (input.messagingApp === "WHATSAPP") {
+    return {
+      adSet: { optimization_goal: "CONVERSATIONS", destination_type: "WHATSAPP", promoted_object: pagePromotion },
+      link: "https://api.whatsapp.com/send",
+      callToAction: { type: "WHATSAPP_MESSAGE", value: { app_destination: "WHATSAPP" } },
+    };
+  }
+  if (input.messagingApp === "MESSENGER") {
+    return {
+      adSet: { optimization_goal: "CONVERSATIONS", destination_type: "MESSENGER", promoted_object: pagePromotion },
+      link: "https://fb.com/messenger_doc/",
+      callToAction: { type: "MESSAGE_PAGE", value: { app_destination: "MESSENGER" } },
+    };
+  }
+  throw new Error("Elige WhatsApp o Messenger para la campaña de mensajes");
+}
+
+/** Uploads the image to the ad account library and returns the hash creatives reference. */
+async function uploadAdImage(adAccountId: string, token: string, base64: string): Promise<string> {
+  const result = await graphPost<{ images?: Record<string, { hash: string }> }>(`${adAccountId}/adimages`, token, { bytes: base64 });
+  const hash = Object.values(result.images ?? {})[0]?.hash;
+  if (!hash) throw new Error("Meta no devolvió el identificador de la imagen");
+  return hash;
+}
+
+/**
+ * Creates campaign, ad set, image creative and ad, all paused, then activates them when `publish` is set.
+ * If Meta rejects a later step, the objects it already accepted stay paused so nothing spends by accident.
+ */
+export async function createMetaCampaign(
   encryptedToken: string,
   organization: Organization,
   input: MetaCampaignInput,
-): Promise<{ campaignId: string; status: "ACTIVE" | "PAUSED" }> {
+): Promise<CreatedMetaCampaign> {
   if (!organization.pageId) throw new Error("Selecciona una Página de Facebook antes de publicar");
-  if (!organization.pixelId) throw new Error("Selecciona un Pixel/dataset con el evento Purchase antes de publicar");
-  let destination: URL;
-  try {
-    destination = new URL(input.destination);
-  } catch {
-    throw new Error("Para campañas de ventas, el destino debe ser una URL válida");
-  }
+  const setup = objectiveSetup(organization, input);
   const token = decryptSecret(encryptedToken);
+  const imageHash = await uploadAdImage(organization.adAccountId, token, input.image.base64);
+  const label = input.objective === "Mensajes" ? (input.messagingApp === "MESSENGER" ? "Messenger" : "WhatsApp") : input.objective;
   const campaign = await graphPost<{ id: string }>(`${organization.adAccountId}/campaigns`, token, {
-    name: `Pulso · Ventas · ${input.offer}`,
-    objective: "OUTCOME_SALES",
+    name: `Pulso · ${label} · ${input.offer}`,
+    objective: CAMPAIGN_OBJECTIVES[input.objective],
     buying_type: "AUCTION",
     special_ad_categories: "[]",
+    // Budget lives on the ad set, so the campaign does not share it across ad sets.
+    is_adset_budget_sharing_enabled: "false",
     status: "PAUSED",
   });
   const adSet = await graphPost<{ id: string }>(`${organization.adAccountId}/adsets`, token, {
-    name: "Pulso · México · Audiencia Advantage+",
+    name: AD_SET_NAME,
     campaign_id: campaign.id,
     daily_budget: Math.round(input.dailyBudget * 100),
     billing_event: "IMPRESSIONS",
-    optimization_goal: "OFFSITE_CONVERSIONS",
     bid_strategy: "LOWEST_COST_WITHOUT_CAP",
-    destination_type: "WEBSITE",
-    promoted_object: JSON.stringify({ pixel_id: organization.pixelId, custom_event_type: "PURCHASE" }),
     targeting: JSON.stringify({ geo_locations: { countries: ["MX"] }, age_min: 18, age_max: 65 }),
     status: "PAUSED",
+    ...setup.adSet,
   });
   const creative = await graphPost<{ id: string }>(`${organization.adAccountId}/adcreatives`, token, {
     name: `Pulso · Creative · ${input.offer}`,
@@ -370,10 +455,11 @@ export async function createMetaSalesCampaign(
     object_story_spec: JSON.stringify({
       page_id: organization.pageId,
       link_data: {
-        link: destination.toString(),
-        message: `Descubre ${input.offer}. Conoce todos los detalles y compra hoy.`,
-        name: input.offer,
-        call_to_action: { type: "SHOP_NOW", value: { link: destination.toString() } },
+        image_hash: imageHash,
+        link: setup.link,
+        message: input.primaryText,
+        name: input.headline,
+        call_to_action: setup.callToAction,
       },
     }),
   });
@@ -388,7 +474,24 @@ export async function createMetaSalesCampaign(
     await graphPost(adSet.id, token, { status: "ACTIVE" });
     await graphPost(ad.id, token, { status: "ACTIVE" });
   }
-  return { campaignId: campaign.id, status: input.publish ? "ACTIVE" : "PAUSED" };
+  return { campaignId: campaign.id, adSetId: adSet.id, status: input.publish ? "ACTIVE" : "PAUSED" };
+}
+
+export interface LeadForm {
+  id: string;
+  name: string;
+}
+
+/** Active instant forms of a Page. Reading them needs a Page token, granted through pages_manage_ads. */
+export async function listLeadForms(encryptedToken: string, pageId: string): Promise<LeadForm[]> {
+  const token = decryptSecret(encryptedToken);
+  const page = await graphGet<{ access_token?: string }>(pageId, token, { fields: "access_token" });
+  if (!page.access_token) throw new Error("No tienes permiso para administrar anuncios de esta Página. Vuelve a conectar Meta.");
+  const forms = await graphGetAll<{ id: string; name: string; status?: string }>(`${pageId}/leadgen_forms`, page.access_token, {
+    fields: "id,name,status",
+    limit: "100",
+  });
+  return forms.filter((form) => !form.status || form.status === "ACTIVE").map(({ id, name }) => ({ id, name }));
 }
 
 /** Updates status or daily budget (in account currency) of a campaign, ad set or ad. */

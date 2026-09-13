@@ -297,7 +297,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
         <div className="content">{pageContent[view]}</div>
       </main>
 
-      {campaignModal && <CampaignModal organization={organization} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
+      {campaignModal && <CampaignModal organization={organization} connected={data.metaConnection.status === "connected"} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
       {modeModal && <ModeModal current={organization.mode} onClose={() => setModeModal(false)} onSelect={updateMode} />}
       {toast && <div className="toast"><Check size={17} />{toast}<button onClick={() => setToast(null)}><X size={15} /></button></div>}
     </div>
@@ -583,18 +583,144 @@ function SettingsView({ organization, onSaved, aiStatus, aiModels, onAiModelSave
   return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><AiModelPanel status={aiStatus} models={aiModels} onSaved={onAiModelSaved}/><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/><label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
 }
 
-function CampaignModal({ organization, defaultPublish, onClose, onCreated }: { organization: Organization; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
+type MessagingApp = "WHATSAPP" | "MESSENGER";
+
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+const OBJECTIVE_HINTS: Record<Organization["objective"], string> = {
+  Ventas: "Compras en tu sitio",
+  Prospectos: "Formularios instantáneos",
+  Mensajes: "WhatsApp o Messenger",
+};
+
+function defaultPrimaryText(offer: string, objective: Organization["objective"]): string {
+  if (objective === "Ventas") return `Descubre ${offer}. Conoce todos los detalles y compra hoy.`;
+  if (objective === "Prospectos") return `¿Te interesa ${offer}? Déjanos tus datos y te contactamos hoy mismo.`;
+  return `¿Tienes dudas sobre ${offer}? Escríbenos y te respondemos al momento.`;
+}
+
+function isWebsite(value: string): boolean {
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function CampaignModal({ organization, connected, defaultPublish, onClose, onCreated }: { organization: Organization; connected: boolean; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [form, setForm] = useState({ offer: "", objective: organization.objective, destination: "", dailyBudget: 500, location: "México", audience: "La IA decide", publish: defaultPublish });
+  const [form, setForm] = useState({ offer: "", objective: organization.objective, destination: "", leadFormId: "", messagingApp: "WHATSAPP" as MessagingApp, dailyBudget: 500, headline: "", primaryText: "", publish: defaultPublish });
+  const [image, setImage] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [leadForms, setLeadForms] = useState<{ forms: Array<{ id: string; name: string }>; reason?: string } | null>(null);
   const estimatedMonth = form.dailyBudget * 30;
-  async function submit() { setSubmitting(true); setSubmitError(null); const response = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, organizationId: organization.id }) }); const result = await response.json(); setSubmitting(false); if (response.ok) onCreated(result.message || "Campaña y creativo generados."); else setSubmitError(result.error || "No fue posible crear la campaña."); }
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal campaign-modal"><div className="modal-head"><div><span>CREADOR CON IA</span><h2>Nueva campaña</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="stepper"><div className={step >= 1 ? "active" : ""}><span>{step > 1 ? <Check size={13}/> : "1"}</span>Objetivo</div><i/><div className={step >= 2 ? "active" : ""}><span>2</span>Estrategia</div><i/><div className={step >= 3 ? "active" : ""}><span>3</span>Confirmar</div></div>
-    <div className="modal-body">{step === 1 && <div className="form-step"><div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus placeholder="Ej. Colección de muebles de otoño" value={form.offer} onChange={(e) => setForm({ ...form, offer: e.target.value })}/><small>Describe el producto, servicio u oferta en una frase.</small></div><div className="field"><label>Objetivo principal</label><div className="objective-grid">{["Ventas", "Prospectos", "Mensajes"].map((objective) => <button key={objective} className={form.objective === objective ? "selected" : ""} onClick={() => setForm({ ...form, objective: objective as typeof form.objective })}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}</b><small>{objective === "Ventas" ? "Compras en tu sitio" : objective === "Prospectos" ? "Formularios de Meta" : "WhatsApp o Messenger"}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div></div><div className="field"><label>Destino</label><input placeholder="https://tusitio.mx o número de WhatsApp" value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })}/></div></div>}
-    {step === 2 && <div className="form-step"><div className="two-fields"><div className="field"><label>Presupuesto diario</label><div className="money-input"><b>$</b><input type="number" min="100" value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })}/><em>MXN</em></div></div><div className="field"><label>Ubicación</label><input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}/></div></div><div className="field"><label>Público</label><div className="ai-choice"><span><Sparkles size={18}/></span><div><b>Dejar que el agente encuentre el público</b><p>Probará audiencias amplias, intereses y señales de tus activos.</p></div><Check size={17}/></div></div><div className="estimate-box"><Gauge size={20}/><div><b>Proyección de inversión</b><p>{money(estimatedMonth)} al mes, dentro de tu límite de {money(organization.monthlyLimit)}.</p></div><span className={estimatedMonth <= organization.monthlyLimit ? "safe" : "over"}>{estimatedMonth <= organization.monthlyLimit ? "Dentro del límite" : "Supera el límite"}</span></div></div>}
-    {step === 3 && <div className="form-step review-step"><div className="ai-building"><span><WandSparkles size={24}/></span><div><h3>El equipo de agentes hará el resto</h3><p>Creará estructura, audiencia, copies, concepto visual y variantes para Facebook e Instagram.</p></div></div><div className="review-grid"><span><small>OFERTA</small><b>{form.offer}</b></span><span><small>OBJETIVO</small><b>{form.objective}</b></span><span><small>INVERSIÓN DIARIA</small><b>{money(form.dailyBudget)}</b></span><span><small>UBICACIÓN</small><b>{form.location}</b></span></div><label className="publish-toggle"><input type="checkbox" checked={form.publish} onChange={(event) => setForm({ ...form, publish: event.target.checked })}/><span/><div><b>Publicar automáticamente al terminar</b><small>Disponible porque el modo {MODE_LABELS[organization.mode]} está activo.</small></div></label><div className="safety-note"><ShieldCheck size={17}/> El límite mensual y la variación máxima de 20% siempre se respetan.</div></div>}</div>
-    {submitError && <div className="modal-error"><AlertCircle size={15}/>{submitError}</div>}<div className="modal-footer"><button className="secondary-button" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? "Cancelar" : "Atrás"}</button>{step < 3 ? <button className="primary-button" disabled={(step === 1 && (!form.offer || !form.destination)) || (step === 2 && estimatedMonth > organization.monthlyLimit)} onClick={() => setStep(step + 1)}>Continuar <ChevronRight size={16}/></button> : <button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={17}/> : <Rocket size={17}/>} {form.publish ? "Crear y lanzar" : "Crear borrador"}</button>}</div></div></div>;
+
+  useEffect(() => {
+    if (form.objective !== "Prospectos" || !connected || leadForms) return;
+    fetch(`/api/meta/lead-forms?organizationId=${encodeURIComponent(organization.id)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) => setLeadForms({ forms: result.forms ?? [], reason: result.reason ?? result.error }))
+      .catch(() => setLeadForms({ forms: [], reason: "No fue posible cargar los formularios." }));
+  }, [form.objective, connected, leadForms, organization.id]);
+
+  function chooseImage(file: File | null) {
+    if (preview) URL.revokeObjectURL(preview);
+    if (file && (!["image/jpeg", "image/png"].includes(file.type) || file.size > MAX_IMAGE_BYTES)) {
+      setImage(null); setPreview(null); setImageError("Usa una imagen JPG o PNG de hasta 4 MB.");
+      return;
+    }
+    setImageError(null); setImage(file); setPreview(file ? URL.createObjectURL(file) : null);
+  }
+
+  const destinationReady = form.objective === "Ventas" ? isWebsite(form.destination)
+    : form.objective === "Prospectos" ? !connected || Boolean(form.leadFormId)
+      : true;
+  const copyReady = form.headline.trim().length >= 3 && form.headline.trim().length <= 60 && form.primaryText.trim().length >= 10 && form.primaryText.trim().length <= 500;
+  const canContinue = step === 1
+    ? form.offer.trim().length >= 3 && destinationReady
+    : estimatedMonth <= organization.monthlyLimit && copyReady && (!connected || Boolean(image));
+
+  function next() {
+    if (step === 1) {
+      setForm((current) => ({
+        ...current,
+        headline: current.headline || current.offer.trim().slice(0, 60),
+        primaryText: current.primaryText || defaultPrimaryText(current.offer.trim(), current.objective),
+      }));
+    }
+    setStep(step + 1);
+  }
+
+  async function submit() {
+    setSubmitting(true); setSubmitError(null);
+    const body = new FormData();
+    body.set("organizationId", organization.id);
+    body.set("offer", form.offer);
+    body.set("objective", form.objective);
+    body.set("headline", form.headline);
+    body.set("primaryText", form.primaryText);
+    body.set("dailyBudget", String(form.dailyBudget));
+    body.set("publish", String(form.publish));
+    if (form.objective === "Ventas") body.set("destination", form.destination);
+    if (form.objective === "Prospectos" && form.leadFormId) body.set("leadFormId", form.leadFormId);
+    if (form.objective === "Mensajes") body.set("messagingApp", form.messagingApp);
+    if (image) body.set("image", image);
+    try {
+      const response = await fetch("/api/campaigns", { method: "POST", body });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) onCreated(result.message || "Campaña creada.");
+      else setSubmitError(result.error || (response.status === 413 ? "La imagen es demasiado grande." : "No fue posible crear la campaña."));
+    } catch {
+      setSubmitError("No fue posible crear la campaña.");
+    } finally { setSubmitting(false); }
+  }
+
+  const destinationSummary = form.objective === "Ventas" ? form.destination
+    : form.objective === "Prospectos" ? leadForms?.forms.find((item) => item.id === form.leadFormId)?.name || "Formulario instantáneo"
+      : form.messagingApp === "WHATSAPP" ? "WhatsApp" : "Messenger";
+  const publishNote = connected
+    ? form.publish ? "Se creará en Meta y empezará a entregarse." : "Se creará en Meta en pausa para que la actives después."
+    : "Modo demo: el lanzamiento se simula.";
+
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal campaign-modal"><div className="modal-head"><div><span>CREADOR DE CAMPAÑAS</span><h2>Nueva campaña</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="stepper"><div className={step >= 1 ? "active" : ""}><span>{step > 1 ? <Check size={13}/> : "1"}</span>Objetivo</div><i/><div className={step >= 2 ? "active" : ""}><span>{step > 2 ? <Check size={13}/> : "2"}</span>Anuncio</div><i/><div className={step >= 3 ? "active" : ""}><span>3</span>Confirmar</div></div>
+    <div className="modal-body">
+      {step === 1 && <div className="form-step">
+        <div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus maxLength={120} placeholder="Ej. Colección de muebles de otoño" value={form.offer} onChange={(e) => setForm({ ...form, offer: e.target.value })}/><small>Describe el producto, servicio u oferta en una frase.</small></div>
+        <div className="field"><label>Objetivo principal</label><div className="objective-grid">{(["Ventas", "Prospectos", "Mensajes"] as const).map((objective) => <button key={objective} type="button" className={form.objective === objective ? "selected" : ""} onClick={() => setForm({ ...form, objective })}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}</b><small>{OBJECTIVE_HINTS[objective]}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div></div>
+        {form.objective === "Ventas" && <div className="field"><label>Página de destino</label><input type="url" placeholder="https://tusitio.mx/producto" value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })}/><small>Debe tener instalado el Pixel con el evento Purchase.</small></div>}
+        {form.objective === "Prospectos" && <div className="field"><label>Formulario instantáneo</label>
+          {!connected ? <p className="field-note">En modo demo el formulario se simula. Con Meta conectado elegirás uno de tu Página.</p>
+            : !leadForms ? <p className="field-note"><LoaderCircle className="spin" size={13}/> Cargando formularios de tu Página…</p>
+              : leadForms.forms.length ? <select value={form.leadFormId} onChange={(e) => setForm({ ...form, leadFormId: e.target.value })}><option value="">Elige un formulario</option>{leadForms.forms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                : <p className="field-note warning">{leadForms.reason || "Tu Página no tiene formularios activos. Crea uno en Meta Business Suite → Formularios instantáneos."}</p>}
+        </div>}
+        {form.objective === "Mensajes" && <div className="field"><label>¿Dónde recibirás los mensajes?</label><div className="choice-row">{(["WHATSAPP", "MESSENGER"] as const).map((app) => <button key={app} type="button" className={form.messagingApp === app ? "selected" : ""} onClick={() => setForm({ ...form, messagingApp: app })}><MessageCircle size={16}/>{app === "WHATSAPP" ? "WhatsApp" : "Messenger"}</button>)}</div><small>{form.messagingApp === "WHATSAPP" ? "Tu Página necesita un número de WhatsApp Business vinculado." : "Los mensajes llegan a la bandeja de tu Página."}</small></div>}
+      </div>}
+      {step === 2 && <div className="form-step">
+        <div className="field"><label>Imagen del anuncio{connected ? "" : " (opcional en demo)"}</label><label className="image-drop">{preview
+          // eslint-disable-next-line @next/next/no-img-element
+          ? <img src={preview} alt="Vista previa del anuncio"/>
+          : <span><ImageIcon size={22}/><b>Elige una imagen JPG o PNG</b><small>Recomendado 1080×1080 px, hasta 4 MB</small></span>}<input type="file" accept="image/jpeg,image/png" onChange={(e) => chooseImage(e.target.files?.[0] ?? null)}/></label>{imageError && <p className="field-note warning">{imageError}</p>}</div>
+        <div className="field"><label>Título <span className="char-count">{form.headline.length}/60</span></label><input maxLength={60} value={form.headline} onChange={(e) => setForm({ ...form, headline: e.target.value })}/></div>
+        <div className="field"><label>Texto principal <span className="char-count">{form.primaryText.length}/500</span></label><textarea maxLength={500} value={form.primaryText} onChange={(e) => setForm({ ...form, primaryText: e.target.value })}/></div>
+        <div className="field"><label>Presupuesto diario</label><div className="money-input"><b>$</b><input type="number" min="100" value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })}/><em>MXN</em></div><small>Audiencia Advantage+ en México, de 18 a 65 años.</small></div>
+        <div className="estimate-box"><Gauge size={20}/><div><b>Proyección de inversión</b><p>{money(estimatedMonth)} al mes; tu límite es {money(organization.monthlyLimit)}.</p></div><span className={estimatedMonth <= organization.monthlyLimit ? "safe" : "over"}>{estimatedMonth <= organization.monthlyLimit ? "Dentro del límite" : "Supera el límite"}</span></div>
+      </div>}
+      {step === 3 && <div className="form-step review-step">
+        {preview && (
+          // Local blob previews cannot go through next/image.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="review-image" src={preview} alt="Imagen del anuncio"/>
+        )}
+        <div className="review-grid"><span><small>OFERTA</small><b>{form.offer}</b></span><span><small>OBJETIVO</small><b>{form.objective} · {destinationSummary}</b></span><span><small>INVERSIÓN DIARIA</small><b>{money(form.dailyBudget)}</b></span><span><small>TÍTULO</small><b>{form.headline}</b></span></div>
+        <label className="publish-toggle"><input type="checkbox" checked={form.publish} onChange={(event) => setForm({ ...form, publish: event.target.checked })}/><span/><div><b>Publicar al terminar</b><small>{publishNote}</small></div></label>
+        <div className="safety-note"><ShieldCheck size={17}/> El límite mensual y la variación máxima de 20% siempre se respetan.</div>
+      </div>}
+    </div>
+    {submitError && <div className="modal-error"><AlertCircle size={15}/>{submitError}</div>}<div className="modal-footer"><button className="secondary-button" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? "Cancelar" : "Atrás"}</button>{step < 3 ? <button className="primary-button" disabled={!canContinue} onClick={next}>Continuar <ChevronRight size={16}/></button> : <button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={17}/> : <Rocket size={17}/>} {form.publish ? "Crear y publicar" : connected ? "Crear en pausa" : "Crear borrador"}</button>}</div></div></div>;
 }
 
 function ModeModal({ current, onClose, onSelect }: { current: AutomationMode; onClose: () => void; onSelect: (mode: AutomationMode) => void }) {

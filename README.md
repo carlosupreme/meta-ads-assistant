@@ -86,7 +86,7 @@ Pulso llama la Responses API únicamente desde el servidor y desactiva el almace
 
 5. Reinicia el servidor y selecciona **Conexiones → Conectar con Meta**.
 
-La integración solicita `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement` e `instagram_basic`. El token inicial se intercambia por uno de larga duración y se cifra antes de guardarse. En modo desarrollo solo funcionará con administradores, desarrolladores o testers de la app. Para ofrecer el SaaS a clientes externos habrá que completar App Review y los requisitos de acceso de Marketing API indicados por Meta.
+La integración solicita `ads_read`, `ads_management`, `business_management`, `pages_show_list`, `pages_read_engagement`, `pages_manage_ads` e `instagram_basic`. El token inicial se intercambia por uno de larga duración y se cifra antes de guardarse. En modo desarrollo solo funcionará con administradores, desarrolladores o testers de la app. Para ofrecer el SaaS a clientes externos habrá que completar App Review y los requisitos de acceso de Marketing API indicados por Meta.
 
 La versión de Graph API se configura mediante `META_GRAPH_VERSION`; el valor inicial es `v26.0` para evitar acoplarla al código.
 
@@ -135,9 +135,20 @@ El monitor se ejecuta con `GET /api/cron/monitor` y `Authorization: Bearer $CRON
 
 ## Creador y publicación
 
-Con datos demo, el creador simula el lanzamiento para validar todo el recorrido. Con una cuenta real, Pulso importa Página, Instagram y Pixel/dataset, y puede crear la estructura completa de una campaña de ventas: campaña, ad set, audiencia México, creativo de enlace y anuncio. Todos los elementos se preparan pausados y solo se activan cuando el usuario marca **Publicar automáticamente**.
+Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre crea la campaña real**: sube la imagen a la biblioteca de la cuenta publicitaria y arma campaña, conjunto (Advantage+ en México, 18–65 años), creativo con imagen y anuncio.
 
-Las campañas nativas de formularios y mensajes se conservan como borrador hasta agregar al onboarding la selección explícita del formulario instantáneo o número de WhatsApp. Si Meta rechaza alguna parte de una creación, los elementos que ya haya aceptado permanecen pausados para evitar gasto accidental.
+| Objetivo | Campaña | Conjunto | Botón del anuncio | Requisito |
+| --- | --- | --- | --- | --- |
+| Ventas | `OUTCOME_SALES` | Conversión Purchase del Pixel, destino sitio web | Comprar → tu URL | Pixel/dataset con Purchase |
+| Prospectos | `OUTCOME_LEADS` | `LEAD_GENERATION` en el anuncio | Registrarte → formulario instantáneo | Formulario activo en la Página |
+| Mensajes | `OUTCOME_ENGAGEMENT` | `CONVERSATIONS` en WhatsApp o Messenger | Enviar mensaje | WhatsApp Business vinculado a la Página (solo WhatsApp) |
+
+- La imagen es obligatoria: JPG o PNG de hasta 4 MB (Vercel limita las solicitudes a 4.5 MB). Recomendado 1080×1080 px.
+- El título (hasta 60 caracteres) y el texto principal se prellenan según el objetivo y se pueden editar.
+- Todo se crea en pausa; **Publicar al terminar** lo activa. Sin publicar, la campaña queda en Meta en pausa, lista para activarse.
+- El presupuesto queda en el conjunto y se registra así, para que los agentes lo administren desde el primer ciclo.
+- Si Meta rechaza un paso, lo que ya aceptó permanece en pausa para evitar gasto accidental.
+- Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
 ## Desplegar gratis en Vercel
 
