@@ -2,9 +2,9 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { isSupabaseConfigured, supabaseAuthConfig } from "@/lib/supabase/config";
 
-// Crons authenticate with CRON_SECRET; login, email confirmation and shared client reports (/r/<token>)
-// must work signed out.
-const PUBLIC_PREFIXES = ["/login", "/auth/", "/api/cron/", "/r/"];
+// Crons authenticate with CRON_SECRET; login, email confirmation, shared client reports (/r/<token>)
+// and public landing page (/landing) must work signed out.
+const PUBLIC_PREFIXES = ["/login", "/auth/", "/api/cron/", "/r/", "/landing"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -13,7 +13,7 @@ export async function middleware(request: NextRequest) {
   const config = supabaseAuthConfig();
 
   if (!isSupabaseConfigured() || !config) {
-    if (isPublic) return NextResponse.next();
+    if (isPublic || pathname === "/") return NextResponse.next();
     return isApi
       ? NextResponse.json({ error: "Supabase no está configurado en el servidor." }, { status: 503 })
       : new NextResponse("Pulso requiere Supabase. Revisa las variables de entorno.", { status: 503 });
@@ -43,9 +43,10 @@ export async function middleware(request: NextRequest) {
   };
 
   if (!signedIn && !isPublic) {
+    if (pathname === "/") return response;
     if (isApi) return NextResponse.json({ error: "Inicia sesión para continuar." }, { status: 401 });
     const login = new URL("/login", request.url);
-    if (pathname !== "/") login.searchParams.set("next", pathname);
+    login.searchParams.set("next", pathname);
     return redirectTo(login);
   }
   if (signedIn && pathname === "/login") return redirectTo(new URL("/", request.url));
