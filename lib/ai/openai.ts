@@ -3,8 +3,6 @@ import { z } from "zod";
 import type { AiAnalysis, AiCampaignContext, AiStatus } from "./contracts";
 
 const MODELS_TTL_MS = 10 * 60_000;
-// Families that cannot answer plain text prompts through the Responses API, or are unrelated to this use.
-const NON_TEXT_MODEL = /(audio|realtime|transcribe|tts|image|dall-e|embedding|moderation|search|whisper|instruct|codex|computer-use)/i;
 
 const ANALYST_INSTRUCTIONS = [
   "Eres el analista senior de Pulso, un SaaS de Meta Ads para dueños de negocio mexicanos. Analiza exclusivamente los datos proporcionados. No inventes métricas, políticas de Meta ni resultados.",
@@ -46,20 +44,28 @@ function openai(): OpenAI {
   return client;
 }
 
-export function aiStatus(model: string | undefined): AiStatus {
-  if (!process.env.OPENAI_API_KEY) return { configured: false, model: model ?? null, reason: "Falta OPENAI_API_KEY en el servidor." };
-  if (!model) return { configured: false, model: null, reason: "Elige un modelo de OpenAI en Configuración." };
-  return { configured: true, model };
+// Temporary: every workspace uses the same low-cost model. Add ids here to reopen the per-workspace choice.
+export const DEFAULT_AI_MODEL = "gpt-5-nano";
+const ALLOWED_AI_MODELS: readonly string[] = [DEFAULT_AI_MODEL];
+
+/** The workspace's stored model while it is still allowed, otherwise the default. */
+export function resolveAiModel(model: string | undefined): string {
+  return model && ALLOWED_AI_MODELS.includes(model) ? model : DEFAULT_AI_MODEL;
 }
 
-/** Text models this API key can call, newest first. Cached briefly to avoid a request per page load. */
+export function aiStatus(model: string | undefined): AiStatus {
+  const effective = resolveAiModel(model);
+  if (!process.env.OPENAI_API_KEY) return { configured: false, model: effective, reason: "Falta OPENAI_API_KEY en el servidor." };
+  return { configured: true, model: effective };
+}
+
+/** Allowed models this API key can call. Cached briefly to avoid a request per page load. */
 export async function listChatModels(): Promise<string[]> {
   if (modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.models;
-  const found: Array<{ id: string; created: number }> = [];
+  const models: string[] = [];
   for await (const model of openai().models.list()) {
-    if (/^(gpt-|o\d)/.test(model.id) && !NON_TEXT_MODEL.test(model.id)) found.push({ id: model.id, created: model.created });
+    if (ALLOWED_AI_MODELS.includes(model.id)) models.push(model.id);
   }
-  const models = found.sort((a, b) => b.created - a.created).map((model) => model.id);
   modelsCache = { at: Date.now(), models };
   return models;
 }

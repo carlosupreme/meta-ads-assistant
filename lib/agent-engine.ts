@@ -18,7 +18,8 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
   const organizations = organizationId
     ? workspace.organizations.filter((organization) => organization.id === organizationId)
     : workspace.organizations;
-  const aiModel = aiStatus(workspace.aiModel).configured ? workspace.aiModel : undefined;
+  const ai = aiStatus(workspace.aiModel);
+  const aiModel = ai.configured && ai.model ? ai.model : undefined;
   const actions: AgentAction[] = [];
   const insights: AgentActivity[] = [];
   const checks: RunCheck[] = [];

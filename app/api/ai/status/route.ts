@@ -12,7 +12,11 @@ export async function GET() {
   const status = aiStatus(aiModel);
   if (!process.env.OPENAI_API_KEY) return NextResponse.json({ status, models: [] });
   try {
-    return NextResponse.json({ status, models: await listChatModels() });
+    const models = await listChatModels();
+    if (!models.length) {
+      return NextResponse.json({ status: { ...status, configured: false, reason: `Tu llave de OpenAI no tiene acceso a ${status.model}.` }, models });
+    }
+    return NextResponse.json({ status, models });
   } catch (error) {
     const reason = `OpenAI: ${error instanceof Error ? error.message : "no respondió"}`;
     return NextResponse.json({ status: { ...status, configured: false, reason }, models: [] });

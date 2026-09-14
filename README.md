@@ -12,7 +12,7 @@ Web app para monitorear y optimizar Facebook e Instagram Ads con agentes autóno
 - Modos Observador, Copiloto, Autónomo y YOLO por negocio.
 - Motor de optimización con límites duros y explicación de cada decisión.
 - Centro de alertas y registro de actividad de seis agentes.
-- IA generativa con OpenAI; cada usuario elige su modelo.
+- IA generativa con OpenAI (`gpt-5-nano` para todos por ahora).
 - Creador guiado de campañas y conceptos creativos.
 - Endpoint de monitoreo programable en `/api/cron/monitor`.
 - Persistencia en Supabase/PostgreSQL con RLS y control de concurrencia.
@@ -64,7 +64,7 @@ Pulso usa OpenAI como único proveedor. El motor de guardrails sigue siendo la a
    OPENAI_API_KEY=sk-...
    ```
 
-2. Cada usuario elige su modelo en **Configuración → Modelo de IA**. La lista se obtiene de la API de OpenAI con esa llave y el servidor rechaza modelos que no aparezcan en ella. Mientras no haya modelo elegido, los agentes trabajan solo con el motor de reglas.
+2. Por ahora todos los workspaces usan `gpt-5-nano`, el modelo más económico de OpenAI, definido en `DEFAULT_AI_MODEL` de `lib/ai/openai.ts`. **Configuración → Modelo de IA** muestra el modelo y avisa si la llave no tiene acceso a él. Para volver a permitir que cada workspace elija, agrega modelos a `ALLOWED_AI_MODELS`; el selector reaparece cuando hay más de uno.
 
 Pulso llama la Responses API únicamente desde el servidor y desactiva el almacenamiento de las respuestas (`store: false`).
 
@@ -95,7 +95,7 @@ La versión de Graph API se configura mediante `META_GRAPH_VERSION`; el valor in
 Cada ciclo sigue el mismo recorrido:
 
 1. **Sincroniza** campañas, conjuntos, anuncios e Insights (el cron lo hace antes de decidir).
-2. **Planea** con reglas deterministas (`lib/optimizer.ts`) y, si el usuario eligió un modelo de OpenAI, suma hasta tres acciones estructuradas propuestas por el modelo.
+2. **Planea** con reglas deterministas (`lib/optimizer.ts`) y, si OpenAI está configurado, suma hasta tres acciones estructuradas propuestas por el modelo.
 3. **Valida** cada propuesta con los guardrails. Nada, ni reglas, ni IA, ni aprobaciones manuales, los evita.
 4. **Resuelve según el modo**: Observador solo sugiere; Copiloto deja la propuesta en **Agentes IA → Aprobaciones pendientes** (expira en 48 h); Autónomo y YOLO ejecutan en Meta.
 5. **Registra** razón, impacto, resultado o motivo del bloqueo en el registro de cambios.
@@ -148,7 +148,7 @@ Cada cambio se aplica en Meta al momento (`/api/control`) y queda en el registro
 Pausar anuncios fatigados no basta si el conjunto se queda sin anuncios frescos. Pulso los reemplaza:
 
 - **Detección**: un conjunto necesita renovación cuando tiene señales de fatiga (frecuencia ≥ 4 o una pausa por fatiga en curso) y le queda como máximo un anuncio activo sin fatiga. No se renueva el mismo conjunto más de una vez por semana.
-- **Variante con IA**: con un modelo de OpenAI elegido, el agente Creativos escribe texto nuevo a partir del mejor anuncio del conjunto (mismo producto y oferta, sin inventar precios ni testimonios) y propone un anuncio nuevo con la misma imagen, destino y botón.
+- **Variante con IA**: con OpenAI configurado, el agente Creativos escribe texto nuevo a partir del mejor anuncio del conjunto (mismo producto y oferta, sin inventar precios ni testimonios) y propone un anuncio nuevo con la misma imagen, destino y botón.
 - **Aprobación**: publicar texto con tu marca requiere una persona. La propuesta queda en **Aprobaciones pendientes** en Copiloto y Autónomo, se publica sola solo en YOLO y en Observador es una recomendación.
 - **Manual**: en **Campañas**, dentro de la lista de anuncios, **Nuevo anuncio con texto renovado** permite elegir el anuncio base, pedir tres ángulos con **Sugerir con IA** o escribir el texto, y subir otra imagen si hace falta.
 

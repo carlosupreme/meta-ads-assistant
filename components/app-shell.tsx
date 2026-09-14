@@ -699,7 +699,7 @@ function AiAssistantPanel({ organization, status }: { organization: Organization
     finally { setAsking(false); }
   }
   const available = Boolean(status?.configured);
-  return <div className="panel assistant-panel"><div className="assistant-head"><div className="assistant-orb"><Sparkles size={18}/></div><div><span>ASESOR ESTRATÉGICO</span><h3>Pregúntale a Pulso sobre tu cuenta</h3><p>{available ? `OpenAI · ${status?.model}` : status?.reason || "Elige un modelo de OpenAI en Configuración."}</p></div><span className={`provider-state ${available ? "ready" : "offline"}`}><i/>{available ? "CONECTADO" : "SIN CONFIGURAR"}</span></div><form className="assistant-input" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} disabled={!available || asking} placeholder={available ? "Ej. ¿Qué campaña debería escalar esta semana?" : "Elige un modelo en Configuración para activar el asesor"}/><button className="primary-button" disabled={!available || asking}>{asking ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>} Preguntar</button></form>{answer && <div className="assistant-answer"><Bot size={17}/><p>{answer}</p></div>}<div className="assistant-suggestions"><button type="button" disabled={!available} onClick={() => setQuestion("¿Qué campaña tiene la mejor oportunidad de escalar hoy y por qué?")}>Qué escalar</button><button type="button" disabled={!available} onClick={() => setQuestion("¿Cuál es el riesgo principal de esta cuenta esta semana?")}>Detectar riesgo</button><button type="button" disabled={!available} onClick={() => setQuestion("Dame tres ideas de copy basadas en la mejor campaña.")}>Ideas de copy</button></div></div>;
+  return <div className="panel assistant-panel"><div className="assistant-head"><div className="assistant-orb"><Sparkles size={18}/></div><div><span>ASESOR ESTRATÉGICO</span><h3>Pregúntale a Pulso sobre tu cuenta</h3><p>{available ? `OpenAI · ${status?.model}` : status?.reason || "Comprobando OpenAI…"}</p></div><span className={`provider-state ${available ? "ready" : "offline"}`}><i/>{available ? "CONECTADO" : "SIN CONFIGURAR"}</span></div><form className="assistant-input" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} disabled={!available || asking} placeholder={available ? "Ej. ¿Qué campaña debería escalar esta semana?" : "El asesor no está disponible por ahora"}/><button className="primary-button" disabled={!available || asking}>{asking ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>} Preguntar</button></form>{answer && <div className="assistant-answer"><Bot size={17}/><p>{answer}</p></div>}<div className="assistant-suggestions"><button type="button" disabled={!available} onClick={() => setQuestion("¿Qué campaña tiene la mejor oportunidad de escalar hoy y por qué?")}>Qué escalar</button><button type="button" disabled={!available} onClick={() => setQuestion("¿Cuál es el riesgo principal de esta cuenta esta semana?")}>Detectar riesgo</button><button type="button" disabled={!available} onClick={() => setQuestion("Dame tres ideas de copy basadas en la mejor campaña.")}>Ideas de copy</button></div></div>;
 }
 
 function CreativesView({ creatives, onCreate }: { creatives: SafeWorkspace["creatives"]; onCreate: () => void }) {
@@ -857,13 +857,13 @@ function AiModelPanel({ status, models, onSaved }: { status: AiStatus | null; mo
   return <div className="panel ai-settings">
     <div><span>MODELO DE IA · OPENAI</span><h3>{status?.model || "Sin modelo elegido"}</h3><p>{status?.configured ? "Los agentes y el asesor usan este modelo en tu workspace." : status?.reason || "Comprobando OpenAI…"}</p></div>
     <div><span className={`provider-state ${status?.configured ? "ready" : "offline"}`}><i/>{status?.configured ? "ACTIVO" : "PENDIENTE"}</span></div>
-    <div className="ai-model-picker">
-      <select value={selected} onChange={(event) => setChoice(event.target.value)} disabled={!options.length || saving}>
-        <option value="" disabled>{options.length ? "Elige un modelo" : "Sin modelos disponibles"}</option>
+    {options.length > 1 ? <div className="ai-model-picker">
+      <select value={selected} onChange={(event) => setChoice(event.target.value)} disabled={saving}>
+        <option value="" disabled>Elige un modelo</option>
         {options.map((id) => <option key={id} value={id}>{id}</option>)}
       </select>
       <button className="primary-button" type="button" onClick={save} disabled={!selected || selected === status?.model || saving}>{saving ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Guardar modelo</button>
-    </div>
+    </div> : <p className="field-note" style={{ gridColumn: "1 / -1" }}>Por ahora todos los workspaces usan este modelo.</p>}
     <small>La llave de OpenAI vive solo en el servidor. Los guardrails siguen siendo la autoridad final sobre cualquier cambio que proponga el modelo.</small>
   </div>;
 }
