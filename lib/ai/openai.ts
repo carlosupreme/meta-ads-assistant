@@ -34,6 +34,33 @@ const analysisSchema = z.object({
   })).max(3).default([]),
 });
 
+// Low effort is supported by every allowed model and keeps answers fast and cheap. Reasoning tokens still count
+// against max_output_tokens, so the budgets below leave room for them.
+const REASONING = { effort: "low" } as const;
+const MAX_CAMPAIGNS_IN_CONTEXT = 50;
+const MAX_ADS_IN_CONTEXT = 40;
+
+interface ModelResponse {
+  status?: string | null;
+  incomplete_details?: { reason?: string } | null;
+  output_text: string;
+}
+
+/** Text of a finished response, or an explicit error when the model stopped before writing an answer. */
+export function readOutputText(response: ModelResponse): string {
+  const text = response.output_text?.trim() ?? "";
+  if (text && response.status !== "incomplete") return text;
+  const reason = response.incomplete_details?.reason;
+  if (reason === "max_output_tokens") {
+    throw new Error(text ? "OpenAI cortó la respuesta por el límite de tokens." : "OpenAI usó todos los tokens razonando y no alcanzó a responder.");
+  }
+  if (reason === "content_filter") throw new Error("OpenAI bloqueó la respuesta con su filtro de contenido.");
+  throw new Error("OpenAI no devolvió texto.");
+}
+
+const readJsonOutput = (response: ModelResponse): unknown =>
+  JSON.parse(readOutputText(response).replace(/^```json\s*/i, "").replace(/```$/, "").trim());
+
 let client: OpenAI | undefined;
 let modelsCache: { at: number; models: string[] } | undefined;
 
@@ -89,34 +116,36 @@ function compactContext(context: AiCampaignContext): string {
     gasto_mes_mxn: context.organization.spentThisMonth,
     ingresos_atribuidos_mxn: context.organization.revenueThisMonth,
     valor_estimado_resultado_mxn: context.organization.resultValue,
-    campanas: context.campaigns.map((campaign) => ({ id: campaign.id, nombre: campaign.name, estado: campaign.status, gasto_mes_mxn: campaign.spend, resultados: campaign.results, costo_resultado_mxn: campaign.costPerResult, ingresos_mxn: campaign.revenue, roas: campaign.roas, tendencia_pct: campaign.trend, presupuesto_diario_mxn: campaign.dailyBudget, nivel_presupuesto: campaign.budgetLevel ?? "campaign" })),
-    anuncios_7d: context.ads.map((ad) => ({ id: ad.id, campana_id: ad.campaignId, nombre: ad.name, estado: ad.status, gasto_mxn: ad.spend, impresiones: ad.impressions, ctr_pct: ad.ctr, frecuencia: ad.frequency, resultados: ad.results })),
+    // The biggest spenders carry the signal; capping keeps prompts short for large accounts.
+    campanas: [...context.campaigns].sort((a, b) => b.spend - a.spend).slice(0, MAX_CAMPAIGNS_IN_CONTEXT).map((campaign) => ({ id: campaign.id, nombre: campaign.name, estado: campaign.status, gasto_mes_mxn: campaign.spend, resultados: campaign.results, costo_resultado_mxn: campaign.costPerResult, ingresos_mxn: campaign.revenue, roas: campaign.roas, tendencia_pct: campaign.trend, presupuesto_diario_mxn: campaign.dailyBudget, nivel_presupuesto: campaign.budgetLevel ?? "campaign" })),
+    anuncios_7d: [...context.ads].sort((a, b) => b.spend - a.spend).slice(0, MAX_ADS_IN_CONTEXT).map((ad) => ({ id: ad.id, campana_id: ad.campaignId, nombre: ad.name, estado: ad.status, gasto_mxn: ad.spend, impresiones: ad.impressions, ctr_pct: ad.ctr, frecuencia: ad.frequency, resultados: ad.results })),
     cambios_ya_planeados: context.plannedActions,
   });
 }
 
-// Reasoning models spend part of max_output_tokens thinking, so the budgets leave room for it.
 export async function analyzeCampaigns(model: string, context: AiCampaignContext): Promise<AiAnalysis> {
   const response = await openai().responses.create({
     model,
     store: false,
-    max_output_tokens: 4000,
+    reasoning: REASONING,
+    max_output_tokens: 6000,
     instructions: ANALYST_INSTRUCTIONS,
     input: compactContext(context),
   });
-  const raw = response.output_text.trim().replace(/^```json\s*/i, "").replace(/```$/, "").trim();
-  return analysisSchema.parse(JSON.parse(raw));
+  return analysisSchema.parse(readJsonOutput(response));
 }
 
 export async function askPulso(model: string, context: AiCampaignContext, question: string): Promise<string> {
   const response = await openai().responses.create({
     model,
     store: false,
-    max_output_tokens: 2000,
+    reasoning: REASONING,
+    text: { verbosity: "low" },
+    max_output_tokens: 4000,
     instructions: ADVISOR_INSTRUCTIONS,
     input: `Contexto de la cuenta: ${compactContext(context)}\n\nPregunta del usuario: ${question}`,
   });
-  return response.output_text.trim();
+  return readOutputText(response);
 }
 
 const COPYWRITER_INSTRUCTIONS = [
@@ -157,7 +186,8 @@ export async function writeAdVariants(model: string, brief: AdVariantBrief): Pro
   const response = await openai().responses.create({
     model,
     store: false,
-    max_output_tokens: 3000,
+    reasoning: REASONING,
+    max_output_tokens: 4000,
     instructions: COPYWRITER_INSTRUCTIONS,
     input: JSON.stringify({
       negocio: brief.business,
@@ -167,6 +197,5 @@ export async function writeAdVariants(model: string, brief: AdVariantBrief): Pro
       rendimiento_7d: { ctr_pct: brief.ctr, frecuencia: brief.frequency, resultados: brief.results },
     }),
   });
-  const raw = response.output_text.trim().replace(/^```json\s*/i, "").replace(/```$/, "").trim();
-  return variantsSchema.parse(JSON.parse(raw)).variants;
+  return variantsSchema.parse(readJsonOutput(response)).variants;
 }
