@@ -143,6 +143,17 @@ En **Campañas** se administra todo sin abrir el Administrador de anuncios:
 
 Cada cambio se aplica en Meta al momento (`/api/control`) y queda en el registro como tuyo, así los agentes nunca lo deshacen. Tus cambios no están sujetos al 20% de los agentes, pero sí al límite mensual, igual que cualquier reactivación. Cuando fijas un presupuesto, el 20% de los agentes se mide desde ese nuevo valor. Puedes pausar incluso el último anuncio de un conjunto; los agentes no.
 
+## Renovación de creativos
+
+Pausar anuncios fatigados no basta si el conjunto se queda sin anuncios frescos. Pulso los reemplaza:
+
+- **Detección**: un conjunto necesita renovación cuando tiene señales de fatiga (frecuencia ≥ 4 o una pausa por fatiga en curso) y le queda como máximo un anuncio activo sin fatiga. No se renueva el mismo conjunto más de una vez por semana.
+- **Variante con IA**: con un modelo de OpenAI elegido, el agente Creativos escribe texto nuevo a partir del mejor anuncio del conjunto (mismo producto y oferta, sin inventar precios ni testimonios) y propone un anuncio nuevo con la misma imagen, destino y botón.
+- **Aprobación**: publicar texto con tu marca requiere una persona. La propuesta queda en **Aprobaciones pendientes** en Copiloto y Autónomo, se publica sola solo en YOLO y en Observador es una recomendación.
+- **Manual**: en **Campañas**, dentro de la lista de anuncios, **Nuevo anuncio con texto renovado** permite elegir el anuncio base, pedir tres ángulos con **Sugerir con IA** o escribir el texto, y subir otra imagen si hace falta.
+
+La sincronización guarda el `object_story_spec` de cada anuncio. Solo se clonan anuncios de imagen con enlace (Página, enlace e imagen); los de video, carrusel o catálogo se renuevan desde el creador de campañas.
+
 ## Creador y publicación
 
 Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre crea la campaña real**: sube la imagen a la biblioteca de la cuenta publicitaria y arma campaña, conjunto (Advantage+ en México, 18–65 años), creativo con imagen y anuncio.

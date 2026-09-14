@@ -1,8 +1,9 @@
-import { updateMetaObject } from "./meta";
+import { createAdVariant, updateMetaObject } from "./meta";
 import type { AgentAction, AgentActivity, WorkspaceData } from "./types";
-import { aiStatus, analyzeCampaigns, buildAiContext } from "./ai/openai";
+import { aiStatus, analyzeCampaigns, buildAiContext, writeAdVariants } from "./ai/openai";
 import {
-  actionsFromAi, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun, type AgentRunOutcome, type RunCheck,
+  actionsFromAi, buildVariantSpec, creativeRefreshTargets, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun,
+  type AgentRunOutcome, type RunCheck,
 } from "./optimizer";
 
 export interface AgentRunResult extends AgentRunOutcome {
@@ -47,6 +48,40 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
       } catch (error) {
         console.error("AI analysis did not complete", error);
       }
+
+      // Replace fatigued creatives before an ad set runs dry.
+      for (const target of creativeRefreshTargets(workspace, organization, proposals, now)) {
+        try {
+          const [variant] = await writeAdVariants(aiModel, {
+            business: organization.name,
+            objective: organization.objective,
+            campaign: target.campaign.name,
+            headline: target.source.creative?.headline,
+            primaryText: target.source.creative?.primaryText,
+            ctr: target.source.ctr,
+            frequency: target.source.frequency,
+            results: target.source.results,
+          });
+          if (!variant) continue;
+          proposals.push({
+            id: `action-${globalThis.crypto.randomUUID()}`,
+            organizationId: organization.id,
+            agent: "Creativos",
+            type: "create_ad",
+            campaignId: target.campaign.id,
+            campaignName: target.campaign.name,
+            adName: target.source.name,
+            variant: { adSetId: target.adSetId, sourceAdId: target.source.id, headline: variant.headline, primaryText: variant.primaryText },
+            reason: `Sus anuncios muestran fatiga y el conjunto se queda sin creativos frescos. Ángulo propuesto: ${variant.angle}.`,
+            impact: "Anuncio nuevo con la misma imagen y destino, y texto renovado",
+            source: "ai",
+            status: "recommended",
+            createdAt: now.toISOString(),
+          });
+        } catch (error) {
+          console.error("Creative refresh did not complete", error);
+        }
+      }
     }
 
     for (const action of resolveProposals(workspace, organization, proposals, now)) {
@@ -66,8 +101,10 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
 /** Pushes an already validated action to Meta. In demo mode the change is simulated locally. */
 export async function executeAction(workspace: WorkspaceData, action: AgentAction, now = new Date()): Promise<AgentAction> {
   try {
-    await pushActionToMeta(workspace, action);
-    return { ...action, status: "executed", resolvedAt: now.toISOString() };
+    const createdAdId = action.type === "create_ad"
+      ? await createAdOnMeta(workspace, action)
+      : (await pushActionToMeta(workspace, action), undefined);
+    return { ...action, ...(createdAdId && { createdAdId }), status: "executed", resolvedAt: now.toISOString() };
   } catch (error) {
     return {
       ...action,
@@ -76,6 +113,21 @@ export async function executeAction(workspace: WorkspaceData, action: AgentActio
       resolvedAt: now.toISOString(),
     };
   }
+}
+
+/** Clones the source ad's story spec with the new copy into its ad set. Returns undefined in demo mode. */
+async function createAdOnMeta(workspace: WorkspaceData, action: AgentAction): Promise<string | undefined> {
+  const { status, encryptedAccessToken } = workspace.metaConnection;
+  if (status !== "connected") return undefined;
+  if (!encryptedAccessToken) throw new Error("La conexión con Meta no tiene un token válido");
+  const organization = workspace.organizations.find((item) => item.id === action.organizationId);
+  const source = workspace.ads.find((ad) => ad.id === action.variant?.sourceAdId);
+  if (!organization || !action.variant || !source?.creative?.spec) throw new Error("Faltan datos del anuncio base para crear la variante");
+  return createAdVariant(encryptedAccessToken, organization.adAccountId, {
+    adSetId: action.variant.adSetId,
+    name: `Pulso · ${action.variant.headline}`,
+    spec: buildVariantSpec(source.creative.spec, action.variant),
+  });
 }
 
 async function pushActionToMeta(workspace: WorkspaceData, action: AgentAction): Promise<void> {

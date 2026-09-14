@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  actionsFromAi, checkGuardrails, commitAgentRun, lastStatusChanges, monitoringSummary, planRuleActions, projectedMonthSpend, recordAction, resolveProposals,
+  actionsFromAi, buildVariantSpec, checkGuardrails, commitAgentRun, creativeRefreshTargets, lastStatusChanges, monitoringSummary, planRuleActions,
+  projectedMonthSpend, recordAction, resolveProposals,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -272,5 +273,66 @@ describe("monitoring", () => {
     const old = { date: "2026-07-01", runs: 5, campaignsChecked: 1, adsChecked: 1, anomalies: 0, blocked: 0, executed: 0, lastRunAt: "2026-07-01T00:00:00.000Z" };
     const next = commitAgentRun(workspace({ monitoring: { org: [old] } }), run(), now);
     assert.deepEqual(next.monitoring?.org.map((day) => day.date), [now.toISOString().slice(0, 10)]);
+  });
+});
+
+describe("creative refresh", () => {
+  const reusable = () => ({
+    id: "cr", headline: "Título base", primaryText: "Texto base del anuncio", reusable: true,
+    spec: JSON.stringify({ page_id: "p", link_data: { link: "https://x.mx", message: "Texto base del anuncio", name: "Título base", image_hash: "h", picture: "https://cdn/x.jpg" } }),
+  });
+  const variantAction = (overrides: Partial<AgentAction> = {}) => budgetAction({
+    type: "create_ad", agent: "Creativos", fromBudget: undefined, toBudget: undefined,
+    variant: { adSetId: "s1", sourceAdId: "a1", headline: "Nuevo ángulo", primaryText: "Un texto renovado para el anuncio" }, ...overrides,
+  });
+
+  it("targets an ad set that is running out of fresh ads", () => {
+    const ads = [ad({ id: "a1", frequency: 4.5, creative: reusable() }), ad({ id: "a2", frequency: 2 })];
+    const proposals = [budgetAction({ type: "pause_ad", adId: "a1", trigger: "fatigue", fromBudget: undefined, toBudget: undefined })];
+    const [target] = creativeRefreshTargets(workspace({ ads }), organization(), proposals, now);
+    assert.equal(target?.adSetId, "s1");
+    assert.equal(target?.source.id, "a1");
+    const healthy = [ad({ id: "a1", creative: reusable() }), ad({ id: "a2" }), ad({ id: "a3" })];
+    assert.equal(creativeRefreshTargets(workspace({ ads: healthy }), organization(), [], now).length, 0);
+  });
+
+  it("waits a week before refreshing the same ad set again", () => {
+    const ads = [ad({ id: "a1", frequency: 4.5, creative: reusable() })];
+    const recent = variantAction({ status: "executed", createdAt: new Date(now.getTime() - 2 * 86_400_000).toISOString() });
+    assert.equal(creativeRefreshTargets(workspace({ ads, actions: [recent] }), organization(), [], now).length, 0);
+    assert.equal(creativeRefreshTargets(workspace({ ads }), organization(), [], now).length, 1);
+  });
+
+  it("asks for approval before publishing new copy unless the business runs in YOLO", () => {
+    const state = { campaigns: [campaign()], ads: [ad({ id: "a1", creative: reusable() })], budgetChanges: [] };
+    const status = (mode: Organization["mode"]) => resolveProposals(state, organization({ mode }), [variantAction()], now)[0].status;
+    assert.equal(status("observer"), "recommended");
+    assert.equal(status("copilot"), "pending");
+    assert.equal(status("autonomous"), "pending");
+    assert.equal(status("yolo"), "executing");
+  });
+
+  it("only clones image link ads with valid copy", () => {
+    assert.equal(checkGuardrails(variantAction(), context({ ads: [ad({ id: "a1" })] })).allowed, false, "source without reusable creative");
+    const shortCopy = variantAction({ variant: { adSetId: "s1", sourceAdId: "a1", headline: "H", primaryText: "corto" } });
+    assert.equal(checkGuardrails(shortCopy, context({ ads: [ad({ id: "a1", creative: reusable() })] })).allowed, false);
+  });
+
+  it("adds the published ad with the new copy and the source image", () => {
+    const next = recordAction(workspace({ ads: [ad({ id: "a1", creative: reusable() })] }), variantAction({ id: "new", status: "executed", createdAdId: "999" }), now);
+    const created = next.ads.find((item) => item.id === "999");
+    assert.equal(created?.status, "ACTIVE");
+    assert.equal(created?.adSetId, "s1");
+    assert.equal(created?.creative?.headline, "Nuevo ángulo");
+    assert.match(created?.creative?.spec ?? "", /"image_hash":"h"/);
+  });
+
+  it("swaps copy and, when given, the image in the cloned spec", () => {
+    const spec = JSON.parse(buildVariantSpec(reusable().spec, { headline: "H nuevo", primaryText: "Texto nuevo del anuncio", imageHash: "nuevo" }));
+    assert.equal(spec.page_id, "p");
+    assert.equal(spec.link_data.name, "H nuevo");
+    assert.equal(spec.link_data.message, "Texto nuevo del anuncio");
+    assert.equal(spec.link_data.image_hash, "nuevo");
+    assert.equal(spec.link_data.picture, undefined);
   });
 });

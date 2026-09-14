@@ -20,6 +20,7 @@ const EXECUTED_MESSAGES: Record<AgentAction["type"], (action: AgentAction) => st
   resume_campaign: () => "Campaña reactivada.",
   pause_ad: () => "Anuncio pausado.",
   resume_ad: () => "Anuncio reactivado.",
+  create_ad: () => "Anuncio nuevo publicado.",
 };
 
 /**

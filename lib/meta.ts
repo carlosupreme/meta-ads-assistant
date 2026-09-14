@@ -111,6 +111,26 @@ interface MetaAd {
   effective_status?: string;
   adset_id: string;
   campaign_id: string;
+  creative?: {
+    id: string;
+    object_story_spec?: {
+      page_id?: string;
+      link_data?: { link?: string; message?: string; name?: string; image_hash?: string };
+    };
+  };
+}
+
+function adCreativeFrom(creative: MetaAd["creative"]): Ad["creative"] {
+  if (!creative) return undefined;
+  const spec = creative.object_story_spec;
+  const linkData = spec?.link_data;
+  return {
+    id: creative.id,
+    headline: linkData?.name,
+    primaryText: linkData?.message,
+    reusable: Boolean(spec?.page_id && linkData?.link && linkData.image_hash),
+    spec: linkData ? JSON.stringify(spec) : undefined,
+  };
 }
 
 interface MetaAdInsight {
@@ -206,7 +226,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
         limit: "200",
       }),
       graphGetAll<MetaAd>(`${account.id}/ads`, token, {
-        fields: "id,name,effective_status,adset_id,campaign_id",
+        fields: "id,name,effective_status,adset_id,campaign_id,creative{id,object_story_spec}",
         limit: "200",
       }),
       graphGetAll<MetaAdInsight>(`${account.id}/insights`, token, {
@@ -277,6 +297,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
         frequency: Number(insight?.frequency || 0),
         results,
         revenue: purchaseValue(insight?.action_values) || results * resultValue,
+        creative: adCreativeFrom(ad.creative),
       });
     }
 
@@ -476,6 +497,30 @@ export async function createMetaCampaign(
     await graphPost(ad.id, token, { status: "ACTIVE" });
   }
   return { campaignId: campaign.id, adSetId: adSet.id, status: input.publish ? "ACTIVE" : "PAUSED" };
+}
+
+export async function uploadAdImageWithToken(encryptedToken: string, adAccountId: string, base64: string): Promise<string> {
+  return uploadAdImage(adAccountId, decryptSecret(encryptedToken), base64);
+}
+
+/** Creates a creative from a ready object_story_spec and an active ad with it in an existing ad set. */
+export async function createAdVariant(
+  encryptedToken: string,
+  adAccountId: string,
+  input: { adSetId: string; name: string; spec: string },
+): Promise<string> {
+  const token = decryptSecret(encryptedToken);
+  const creative = await graphPost<{ id: string }>(`${adAccountId}/adcreatives`, token, {
+    name: `Pulso · Variante · ${input.name}`,
+    object_story_spec: input.spec,
+  });
+  const ad = await graphPost<{ id: string }>(`${adAccountId}/ads`, token, {
+    name: input.name,
+    adset_id: input.adSetId,
+    creative: JSON.stringify({ creative_id: creative.id }),
+    status: "ACTIVE",
+  });
+  return ad.id;
 }
 
 export interface LeadForm {

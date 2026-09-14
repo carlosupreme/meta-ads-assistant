@@ -1,7 +1,7 @@
 // Pure optimization core: planning rules, hard guardrails and state transitions.
 // It only has type imports so it runs on the server, in the browser and under `node --test`.
 import type {
-  Ad, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, MonitoringDay, Organization, WorkspaceData,
+  Ad, AdVariant, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, MonitoringDay, Organization, WorkspaceData,
 } from "./types";
 import type { AiActionProposal } from "./ai/contracts";
 
@@ -16,6 +16,7 @@ export const GUARDRAILS = {
   fatigueMinImpressions: 1000,
   scaleStep: 0.15,
   fatigueRestDays: 7,
+  creativeRefreshDays: 7,
 } as const;
 
 const HOUR_MS = 3_600_000;
@@ -87,6 +88,19 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
   const campaign = campaigns.find((item) => item.id === action.campaignId && item.organizationId === organization.id);
   if (!campaign) return block("La campaña ya no existe en la cuenta sincronizada.");
 
+  if (action.type === "create_ad") {
+    const variant = action.variant;
+    if (!variant) return block("Falta el contenido del anuncio nuevo.");
+    const source = ads.find((item) => item.id === variant.sourceAdId && item.campaignId === campaign.id);
+    if (!source || source.adSetId !== variant.adSetId) return block("El anuncio base ya no existe en esta campaña.");
+    if (!source.creative?.reusable) return block("El anuncio base no usa imagen con enlace; crea el nuevo desde el creador de campañas.");
+    const headline = variant.headline.trim().length;
+    const text = variant.primaryText.trim().length;
+    if (headline < 3 || headline > 60 || text < 10 || text > 500) return block("El título debe tener de 3 a 60 caracteres y el texto de 10 a 500.");
+    if (action.source !== "user" && campaign.status !== "ACTIVE") return block("La campaña está pausada; no hace falta renovar sus anuncios ahora.");
+    return allow;
+  }
+
   if (action.type === "resume_campaign") {
     if (campaign.status !== "PAUSED") return block("La campaña no está pausada.");
     if (organization.spentThisMonth >= organization.monthlyLimit) return block("El gasto del mes ya alcanzó el límite; la campaña sigue pausada.");
@@ -145,6 +159,28 @@ export function checkGuardrails(action: AgentAction, context: GuardrailContext):
 
 /** Applies the local effect of an executed action. */
 export function applyAction<T extends OptimizationState>(state: T, action: AgentAction, now: Date): T {
+  if (action.type === "create_ad") {
+    const variant = action.variant;
+    const source = state.ads.find((ad) => ad.id === variant?.sourceAdId);
+    if (!variant || !source) return state;
+    const created: Ad = {
+      id: action.createdAdId ?? `ad-${action.id}`,
+      organizationId: source.organizationId,
+      campaignId: source.campaignId,
+      adSetId: variant.adSetId,
+      name: `Pulso · ${variant.headline}`,
+      status: "ACTIVE",
+      spend: 0, impressions: 0, clicks: 0, ctr: 0, frequency: 0, results: 0, revenue: 0,
+      creative: {
+        id: `pending-${action.id}`,
+        headline: variant.headline,
+        primaryText: variant.primaryText,
+        reusable: Boolean(source.creative?.reusable),
+        spec: source.creative?.spec ? buildVariantSpec(source.creative.spec, variant) : undefined,
+      },
+    };
+    return { ...state, ads: [created, ...state.ads.filter((ad) => ad.id !== created.id)] };
+  }
   if (action.type === "pause_ad" || action.type === "resume_ad") {
     const status = action.type === "pause_ad" ? "PAUSED" as const : "ACTIVE" as const;
     return { ...state, ads: state.ads.map((ad) => ad.id === action.adId ? { ...ad, status } : ad) };
@@ -194,8 +230,24 @@ const median = (values: number[]) => {
 
 const isMature = (campaign: Campaign) => campaign.dailyBudget > 0 ? campaign.spend >= campaign.dailyBudget * 2 : campaign.spend > 0;
 const hasManagedBudget = (campaign: Campaign) => (campaign.budgetLevel ?? "campaign") !== "none" && campaign.dailyBudget > 0;
-const actionKey = (action: Pick<AgentAction, "type" | "campaignId" | "adId">) =>
-  action.type === "pause_ad" || action.type === "resume_ad" ? `ad:${action.adId}` : `campaign:${action.campaignId}`;
+const actionKey = (action: Pick<AgentAction, "type" | "campaignId" | "adId" | "variant">) => {
+  if (action.type === "create_ad") return `adset:${action.variant?.adSetId}`;
+  return action.type === "pause_ad" || action.type === "resume_ad" ? `ad:${action.adId}` : `campaign:${action.campaignId}`;
+};
+
+/** Copy of a reusable object_story_spec with new text and, when given, a new image. */
+export function buildVariantSpec(spec: string, variant: Pick<AdVariant, "headline" | "primaryText" | "imageHash">): string {
+  const parsed = JSON.parse(spec) as Record<string, unknown> & { link_data?: Record<string, unknown> };
+  if (!parsed.link_data) throw new Error("El anuncio base no usa imagen con enlace.");
+  const linkData: Record<string, unknown> = { ...parsed.link_data, message: variant.primaryText, name: variant.headline };
+  if (variant.imageHash) {
+    // Meta derives these from the old image; keeping them would conflict with the new hash.
+    delete linkData.picture;
+    delete linkData.image_url;
+    linkData.image_hash = variant.imageHash;
+  }
+  return JSON.stringify({ ...parsed, link_data: linkData });
+}
 
 const STATUS_ACTIONS = new Set<AgentActionType>(["pause_campaign", "resume_campaign", "pause_ad", "resume_ad"]);
 
@@ -417,6 +469,45 @@ export function actionsFromAi(
   });
 }
 
+export interface CreativeRefreshTarget {
+  campaign: Campaign;
+  adSetId: string;
+  /** Best ad in the set whose image and destination can be reused. */
+  source: Ad;
+}
+
+/**
+ * Ad sets that are running out of fresh creatives: at most one active ad left that is not fatigued, with
+ * fatigue already showing. Sets refreshed in the last week are skipped, so the agents never flood a set.
+ */
+export function creativeRefreshTargets(
+  workspace: Pick<WorkspaceData, "campaigns" | "ads" | "actions">,
+  organization: Organization,
+  proposals: AgentAction[],
+  now: Date,
+): CreativeRefreshTarget[] {
+  const since = now.getTime() - GUARDRAILS.creativeRefreshDays * DAY_MS;
+  const recentlyRefreshed = new Set(workspace.actions
+    .filter((action) => action.organizationId === organization.id && action.type === "create_ad" && action.status !== "rejected" && action.status !== "blocked" && action.status !== "failed" && Date.parse(action.createdAt) >= since)
+    .flatMap((action) => action.variant ? [action.variant.adSetId] : []));
+  const pausing = new Set(proposals.filter((proposal) => proposal.type === "pause_ad" && proposal.trigger === "fatigue").map((proposal) => proposal.adId));
+  const ads = workspace.ads.filter((ad) => ad.organizationId === organization.id);
+  const targets: CreativeRefreshTarget[] = [];
+  for (const adSetId of new Set(ads.map((ad) => ad.adSetId))) {
+    if (recentlyRefreshed.has(adSetId)) continue;
+    const adSetAds = ads.filter((ad) => ad.adSetId === adSetId);
+    const campaign = workspace.campaigns.find((item) => item.id === adSetAds[0].campaignId && item.status === "ACTIVE");
+    if (!campaign) continue;
+    const active = adSetAds.filter((ad) => ad.status === "ACTIVE");
+    const fatigued = active.filter((ad) => pausing.has(ad.id) || ad.frequency >= GUARDRAILS.fatigueFrequency);
+    const fresh = active.filter((ad) => !pausing.has(ad.id) && ad.frequency < GUARDRAILS.fatigueFrequency);
+    if (!fatigued.length || fresh.length > 1) continue;
+    const source = adSetAds.filter((ad) => ad.creative?.reusable).sort((a, b) => b.results - a.results || b.ctr - a.ctr)[0];
+    if (source) targets.push({ campaign, adSetId, source });
+  }
+  return targets.slice(0, 1);
+}
+
 /** Runs proposals through guardrails in order and assigns a status according to the automation mode. */
 export function resolveProposals(
   state: OptimizationState,
@@ -436,19 +527,21 @@ export function resolveProposals(
       resolved.push({ ...proposal, status: "blocked", guardrail: check.reason, resolvedAt: now.toISOString() });
       continue;
     }
-    resolved.push({ ...proposal, status: statusForMode(organization.mode) });
+    resolved.push({ ...proposal, status: statusForMode(organization.mode, proposal.type) });
     working = applyAction(working, proposal, now);
   }
   return resolved;
 }
 
-function statusForMode(mode: AutomationMode): AgentAction["status"] {
+function statusForMode(mode: AutomationMode, type: AgentActionType): AgentAction["status"] {
   if (mode === "observer") return "recommended";
   if (mode === "copilot") return "pending";
+  // New ads publish copy under the brand's name: only YOLO does that without a human look.
+  if (type === "create_ad" && mode !== "yolo") return "pending";
   return "executing";
 }
 
-export function describeAction(action: Pick<AgentAction, "type" | "campaignName" | "adName" | "fromBudget" | "toBudget">): string {
+export function describeAction(action: Pick<AgentAction, "type" | "campaignName" | "adName" | "fromBudget" | "toBudget" | "variant">): string {
   const budgets = action.fromBudget !== undefined && action.toBudget !== undefined
     ? ` de ${formatMoney(action.fromBudget)} a ${formatMoney(action.toBudget)}/día`
     : "";
@@ -459,6 +552,7 @@ export function describeAction(action: Pick<AgentAction, "type" | "campaignName"
     resume_campaign: `reactivar la campaña ${action.campaignName}`,
     pause_ad: `pausar el anuncio ${action.adName} de ${action.campaignName}`,
     resume_ad: `reactivar el anuncio ${action.adName} de ${action.campaignName}`,
+    create_ad: `crear un anuncio nuevo en ${action.campaignName}: “${action.variant?.headline ?? ""}”`,
   };
   return descriptions[action.type];
 }
@@ -471,6 +565,7 @@ function executedTitle(action: AgentAction): string {
     resume_campaign: `Reactivé la campaña ${action.campaignName}`,
     pause_ad: `Pausé el anuncio ${action.adName}`,
     resume_ad: `Reactivé el anuncio ${action.adName}`,
+    create_ad: `Publiqué un anuncio nuevo en ${action.campaignName}`,
   };
   return titles[action.type];
 }

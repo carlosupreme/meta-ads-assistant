@@ -1,5 +1,14 @@
 import type { WorkspaceData } from "./types";
 
+/** Demo image link creative, so variants can be tried without Meta. */
+const demoCreative = (id: string, headline: string, primaryText: string, link: string) => ({
+  id,
+  headline,
+  primaryText,
+  reusable: true,
+  spec: JSON.stringify({ page_id: "demo-page", link_data: { link, message: primaryText, name: headline, image_hash: "demo-image", call_to_action: { type: "SHOP_NOW", value: { link } } } }),
+});
+
 export const demoData: WorkspaceData = {
   user: { name: "Carlos", email: "carlos@empresa.mx" },
   metaConnection: {
@@ -94,12 +103,12 @@ export const demoData: WorkspaceData = {
     },
   ],
   ads: [
-    { id: "ad-1a", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Sala completa", status: "ACTIVE", spend: 4210, impressions: 42300, clicks: 804, ctr: 1.9, frequency: 2.2, results: 16, revenue: 18400 },
-    { id: "ad-1b", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Detalle madera", status: "ACTIVE", spend: 3890, impressions: 38100, clicks: 305, ctr: 0.8, frequency: 4.6, results: 7, revenue: 7300 },
-    { id: "ad-1c", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Envío gratis", status: "ACTIVE", spend: 3120, impressions: 29800, clicks: 507, ctr: 1.7, frequency: 1.9, results: 12, revenue: 13900 },
+    { id: "ad-1a", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Sala completa", status: "ACTIVE", spend: 4210, impressions: 42300, clicks: 804, ctr: 1.9, frequency: 2.2, results: 16, revenue: 18400, creative: demoCreative("cr-1a", "Tu sala completa, lista esta semana", "Sofá, mesa y alfombra que combinan desde el primer día. Envío gratis a todo México.", "https://casanorte.mx/otono") },
+    { id: "ad-1b", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Detalle madera", status: "ACTIVE", spend: 3890, impressions: 38100, clicks: 305, ctr: 0.8, frequency: 4.6, results: 7, revenue: 7300, creative: demoCreative("cr-1b", "Madera sólida que dura años", "Cada pieza de la colección Otoño está hecha a mano con madera sólida. Conócela hoy.", "https://casanorte.mx/otono") },
+    { id: "ad-1c", organizationId: "org-casa-norte", campaignId: "cmp-1", adSetId: "as-1", name: "Otoño · Envío gratis", status: "ACTIVE", spend: 3120, impressions: 29800, clicks: 507, ctr: 1.7, frequency: 1.9, results: 12, revenue: 13900, creative: demoCreative("cr-1c", "Envío gratis en toda la colección", "Renueva tu casa sin pagar envío. Colección Otoño con entrega a todo México.", "https://casanorte.mx/otono") },
     { id: "ad-2a", organizationId: "org-casa-norte", campaignId: "cmp-2", adSetId: "as-2", name: "Remarketing · Carrito", status: "ACTIVE", spend: 5480, impressions: 21900, clicks: 613, ctr: 2.8, frequency: 3.1, results: 23, revenue: 22400 },
     { id: "ad-3a", organizationId: "org-casa-norte", campaignId: "cmp-3", adSetId: "as-3", name: "Catálogo dinámico", status: "ACTIVE", spend: 3610, impressions: 33200, clicks: 431, ctr: 1.3, frequency: 2.7, results: 12, revenue: 9400 },
-    { id: "ad-5a", organizationId: "org-brava", campaignId: "cmp-5", adSetId: "as-5", name: "Lead Gen · Testimonio", status: "ACTIVE", spend: 3540, impressions: 30400, clicks: 669, ctr: 2.2, frequency: 2.4, results: 31, revenue: 26350 },
+    { id: "ad-5a", organizationId: "org-brava", campaignId: "cmp-5", adSetId: "as-5", name: "Lead Gen · Testimonio", status: "ACTIVE", spend: 3540, impressions: 30400, clicks: 669, ctr: 2.2, frequency: 2.4, results: 31, revenue: 26350, creative: demoCreative("cr-5a", "Así crecimos 3× en un año", "Dueños de negocio como tú ya usan nuestro método. Déjanos tus datos y te contamos cómo.", "http://fb.me/") },
     { id: "ad-5b", organizationId: "org-brava", campaignId: "cmp-5", adSetId: "as-5", name: "Lead Gen · Oferta genérica", status: "ACTIVE", spend: 1960, impressions: 17800, clicks: 142, ctr: 0.8, frequency: 2.1, results: 0, revenue: 0 },
     { id: "ad-6a", organizationId: "org-lumbre", campaignId: "cmp-6", adSetId: "as-6", name: "Mensajes · Latte de temporada", status: "ACTIVE", spend: 2210, impressions: 26400, clicks: 739, ctr: 2.8, frequency: 2.6, results: 54, revenue: 16740 },
   ],

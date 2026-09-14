@@ -88,6 +88,27 @@ export interface Ad {
   frequency: number;
   results: number;
   revenue: number;
+  creative?: AdCreative;
+}
+
+/** Copy and story spec of an ad, kept so new variants can reuse its image and destination. */
+export interface AdCreative {
+  id: string;
+  headline?: string;
+  primaryText?: string;
+  /** True for image link ads with page, link and image: the formats a variant can clone. */
+  reusable: boolean;
+  /** JSON of Meta's object_story_spec. */
+  spec?: string;
+}
+
+/** A new ad cloned from an existing one in the same ad set, with new copy and optionally a new image. */
+export interface AdVariant {
+  adSetId: string;
+  sourceAdId: string;
+  headline: string;
+  primaryText: string;
+  imageHash?: string;
 }
 
 export type AgentName = "Supervisor" | "Presupuesto" | "Audiencias" | "Creativos" | "Analista" | "Estratega";
@@ -98,7 +119,8 @@ export type AgentActionType =
   | "pause_campaign"
   | "resume_campaign"
   | "pause_ad"
-  | "resume_ad";
+  | "resume_ad"
+  | "create_ad";
 
 export type AgentActionStatus =
   | "recommended"
@@ -119,6 +141,9 @@ export interface AgentAction {
   campaignName: string;
   adId?: string;
   adName?: string;
+  variant?: AdVariant;
+  /** Meta id of the ad a create_ad action produced. */
+  createdAdId?: string;
   fromBudget?: number;
   toBudget?: number;
   reason: string;

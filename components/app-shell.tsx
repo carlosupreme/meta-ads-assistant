@@ -253,7 +253,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
 
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
-    campaigns: <CampaignsView campaigns={campaigns} ads={ads} onToggle={toggleCampaign} onControl={control} onCreate={() => setCampaignModal(true)} />,
+    campaigns: <CampaignsView campaigns={campaigns} ads={ads} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
     agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
@@ -449,8 +449,9 @@ function PanelHeader({ title, subtitle, action }: { title: string; subtitle: str
 }
 
 type ControlRequest = (body: Record<string, unknown>) => Promise<boolean>;
+type AdCreatedHandler = (workspace: SafeWorkspace, message: string) => void;
 
-function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; onControl?: ControlRequest }) {
+function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl, onAdCreated }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   if (!campaigns.length) return <div className="empty-panel"><Megaphone size={24}/><b>Aún no hay campañas</b><span>Crea la primera con ayuda de los agentes.</span></div>;
   return <div className={`campaign-table ${compact ? "compact" : ""}`}>
@@ -473,7 +474,7 @@ function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl }:
             : <><b>{money(campaign.dailyBudget)}</b><small>{campaign.budgetLevel === "none" ? "presupuesto total" : "por día"}</small></>}</div>}
           <button className="row-action" disabled={campaign.status === "DRAFT"} onClick={() => onToggle?.(campaign)} title={campaign.status === "ACTIVE" ? "Pausar" : "Activar"}>{campaign.status === "ACTIVE" ? <Pause size={15}/> : <Play size={15}/>}</button>
         </div>
-        {ads && open && <AdList ads={ads.filter((ad) => ad.campaignId === campaign.id)} onControl={onControl}/>}
+        {ads && open && <AdList ads={ads.filter((ad) => ad.campaignId === campaign.id)} onControl={onControl} onAdCreated={onAdCreated}/>}
       </Fragment>;
     })}
   </div>;
@@ -502,8 +503,10 @@ function BudgetEditor({ campaign, onSave }: { campaign: Campaign; onSave: (daily
   </form>;
 }
 
-function AdList({ ads, onControl }: { ads: Ad[]; onControl?: ControlRequest }) {
+function AdList({ ads, onControl, onAdCreated }: { ads: Ad[]; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const reusable = ads.filter((ad) => ad.creative?.reusable);
   async function toggle(ad: Ad) {
     if (!onControl) return;
     setBusyId(ad.id);
@@ -522,7 +525,86 @@ function AdList({ ads, onControl }: { ads: Ad[]; onControl?: ControlRequest }) {
       <span>{ad.results}</span>
       <button className="row-action" disabled={!onControl || busyId === ad.id} onClick={() => toggle(ad)} title={ad.status === "ACTIVE" ? "Pausar anuncio" : "Reactivar anuncio"}>{busyId === ad.id ? <LoaderCircle className="spin" size={14}/> : ad.status === "ACTIVE" ? <Pause size={14}/> : <Play size={14}/>}</button>
     </div>)}
+    {onAdCreated && <div className="ad-list-footer">
+      {reusable.length
+        ? <button className="text-button" onClick={() => setCreating(true)}><WandSparkles size={14}/> Nuevo anuncio con texto renovado</button>
+        : <small>Para crear variantes aquí, la campaña necesita un anuncio de imagen con enlace.</small>}
+    </div>}
+    {creating && onAdCreated && <AdVariantModal ads={reusable} onClose={() => setCreating(false)} onCreated={(workspace, message) => { setCreating(false); onAdCreated(workspace, message); }}/>}
   </div>;
+}
+
+function AdVariantModal({ ads, onClose, onCreated }: { ads: Ad[]; onClose: () => void; onCreated: AdCreatedHandler }) {
+  const best = [...ads].sort((a, b) => b.results - a.results || b.ctr - a.ctr)[0];
+  const [sourceId, setSourceId] = useState(best?.id ?? "");
+  const [headline, setHeadline] = useState(best?.creative?.headline ?? "");
+  const [primaryText, setPrimaryText] = useState(best?.creative?.primaryText ?? "");
+  const [variants, setVariants] = useState<Array<{ headline: string; primaryText: string; angle: string }>>([]);
+  const [image, setImage] = useState<File | null>(null);
+  const [busy, setBusy] = useState<"suggest" | "create" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const valid = headline.trim().length >= 3 && headline.trim().length <= 60 && primaryText.trim().length >= 10 && primaryText.trim().length <= 500;
+
+  function chooseSource(id: string) {
+    const next = ads.find((ad) => ad.id === id);
+    setSourceId(id);
+    setHeadline(next?.creative?.headline ?? "");
+    setPrimaryText(next?.creative?.primaryText ?? "");
+    setVariants([]);
+  }
+
+  function chooseImage(file: File | null) {
+    if (file && (!["image/jpeg", "image/png"].includes(file.type) || file.size > MAX_IMAGE_BYTES)) {
+      setImage(null);
+      setError("Usa una imagen JPG o PNG de hasta 4 MB.");
+      return;
+    }
+    setError(null);
+    setImage(file);
+  }
+
+  async function suggest() {
+    setBusy("suggest"); setError(null);
+    try {
+      const response = await fetch("/api/creatives/variants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ adId: sourceId }) });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) setVariants(result.variants ?? []);
+      else setError(result.error || "No fue posible sugerir variantes.");
+    } catch {
+      setError("No fue posible sugerir variantes.");
+    } finally { setBusy(null); }
+  }
+
+  async function create() {
+    setBusy("create"); setError(null);
+    const body = new FormData();
+    body.set("sourceAdId", sourceId);
+    body.set("headline", headline);
+    body.set("primaryText", primaryText);
+    if (image) body.set("image", image);
+    try {
+      const response = await fetch("/api/creatives", { method: "POST", body });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.workspace) onCreated(result.workspace, result.message);
+      else setError(result.message || result.error || "No fue posible crear el anuncio.");
+    } catch {
+      setError("No fue posible crear el anuncio.");
+    } finally { setBusy(null); }
+  }
+
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal">
+    <div className="modal-head"><div><span>RENOVACIÓN DE CREATIVOS</span><h2>Nuevo anuncio</h2></div><button onClick={onClose}><X size={19}/></button></div>
+    <div className="modal-body"><div className="form-step">
+      <div className="field"><label>Anuncio base</label><select value={sourceId} onChange={(event) => chooseSource(event.target.value)}>{ads.map((ad) => <option key={ad.id} value={ad.id}>{ad.name} · {ad.results} resultados · CTR {ad.ctr.toFixed(2)}%</option>)}</select><small>El anuncio nuevo usa su destino y su botón; la imagen también, salvo que subas otra.</small></div>
+      <div className="suggest-row"><p className="field-note">¿Sin ideas? OpenAI propone tres ángulos con la misma oferta.</p><button type="button" className="secondary-button" onClick={suggest} disabled={!sourceId || Boolean(busy)}>{busy === "suggest" ? <LoaderCircle className="spin" size={15}/> : <Sparkles size={15}/>} Sugerir con IA</button></div>
+      {variants.length > 0 && <div className="variant-grid">{variants.map((variant, index) => <button type="button" key={`${variant.angle}-${index}`} className={`variant-card ${variant.headline === headline && variant.primaryText === primaryText ? "selected" : ""}`} onClick={() => { setHeadline(variant.headline); setPrimaryText(variant.primaryText); }}><small>{variant.angle}</small><b>{variant.headline}</b><span>{variant.primaryText}</span></button>)}</div>}
+      <div className="field"><label>Título <span className="char-count">{headline.length}/60</span></label><input maxLength={60} value={headline} onChange={(event) => setHeadline(event.target.value)}/></div>
+      <div className="field"><label>Texto principal <span className="char-count">{primaryText.length}/500</span></label><textarea maxLength={500} value={primaryText} onChange={(event) => setPrimaryText(event.target.value)}/></div>
+      <div className="field"><label>Imagen nueva (opcional)</label><input type="file" accept="image/jpeg,image/png" onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}/><small>JPG o PNG de hasta 4 MB. En modo demo la imagen no se sube.</small></div>
+    </div></div>
+    {error && <div className="modal-error"><AlertCircle size={15}/>{error}</div>}
+    <div className="modal-footer"><button className="secondary-button" onClick={onClose}>Cancelar</button><button className="primary-button" onClick={create} disabled={!valid || !sourceId || Boolean(busy)}>{busy === "create" ? <LoaderCircle className="spin" size={16}/> : <Rocket size={16}/>} Publicar anuncio</button></div>
+  </div></div>;
 }
 
 function ActivityList({ activities }: { activities: SafeWorkspace["activities"] }) {
@@ -532,13 +614,13 @@ function ActivityList({ activities }: { activities: SafeWorkspace["activities"] 
   }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
 }
 
-function CampaignsView({ campaigns, ads, onToggle, onControl, onCreate }: { campaigns: Campaign[]; ads: Ad[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onCreate: () => void }) {
+function CampaignsView({ campaigns, ads, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
   const [query, setQuery] = useState("");
   const filtered = campaigns.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
   return <div className="page-stack">
     <div className="page-intro"><div><h2>Todas tus campañas</h2><p>Supervisa resultados y deja que Pulso optimice la inversión.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Crear con IA</button></div>
     <div className="summary-strip"><div><span>Campañas</span><b>{campaigns.length}</b></div><div><span>Activas</span><b className="green-text">{campaigns.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(campaigns.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(campaigns.reduce((sum, c) => sum + c.roas, 0) / Math.max(campaigns.length, 1)).toFixed(2)}×</b></div></div>
-    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} onToggle={onToggle} onControl={onControl}/></div>
+    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} onToggle={onToggle} onControl={onControl} onAdCreated={onAdCreated}/></div>
   </div>;
 }
 
@@ -568,7 +650,7 @@ function ApprovalsPanel({ actions, decidingId, onDecide }: { actions: AgentActio
       const busy = decidingId === action.id;
       return <div className="approval-row" key={action.id}>
         <span className={`agent-icon ${agentMeta[action.agent].color}`}><Icon size={15}/></span>
-        <div><strong>{capitalize(describeAction(action))}</strong><p>{action.reason}</p><em>{action.impact}{action.source === "ai" ? " · Propuesto por IA" : ""}</em></div>
+        <div><strong>{capitalize(describeAction(action))}</strong><p>{action.reason}</p>{action.variant && <blockquote className="variant-copy"><b>{action.variant.headline}</b>{action.variant.primaryText}</blockquote>}<em>{action.impact}{action.source === "ai" ? " · Propuesto por IA" : ""}</em></div>
         <div className="approval-side">
           {action.fromBudget !== undefined && action.toBudget !== undefined && <div className="budget-diff">{money(action.fromBudget)}<ChevronRight size={11}/><b>{money(action.toBudget)}</b></div>}
           <div className="approval-actions">

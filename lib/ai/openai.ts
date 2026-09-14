@@ -112,3 +112,55 @@ export async function askPulso(model: string, context: AiCampaignContext, questi
   });
   return response.output_text.trim();
 }
+
+const COPYWRITER_INSTRUCTIONS = [
+  "Eres copywriter senior de anuncios de Facebook e Instagram para negocios mexicanos.",
+  "Escribe tres variantes del anuncio base con ángulos distintos (por ejemplo beneficio principal, prueba social y oportunidad del momento) que mantengan el mismo producto, oferta y promesa.",
+  "No inventes precios, descuentos, fechas, garantías, testimonios ni cifras que no estén en el anuncio base.",
+  "Español de México, claro y directo. headline de 3 a 60 caracteres; primaryText de 10 a 500 caracteres; angle es el nombre corto del ángulo.",
+  "Devuelve JSON estricto sin Markdown: {variants:[{headline,primaryText,angle}]}.",
+].join(" ");
+
+const variantsSchema = z.object({
+  variants: z.array(z.object({
+    headline: z.string().trim().min(3).max(60),
+    primaryText: z.string().trim().min(10).max(500),
+    angle: z.string().trim().min(2).max(80),
+  })).min(1).max(3),
+});
+
+export interface AdVariantBrief {
+  business: string;
+  objective: string;
+  campaign: string;
+  headline?: string;
+  primaryText?: string;
+  ctr: number;
+  frequency: number;
+  results: number;
+}
+
+export interface AdVariantCopy {
+  headline: string;
+  primaryText: string;
+  angle: string;
+}
+
+/** Fresh copy for a fatigued ad that keeps its offer; guardrails still validate lengths before publishing. */
+export async function writeAdVariants(model: string, brief: AdVariantBrief): Promise<AdVariantCopy[]> {
+  const response = await openai().responses.create({
+    model,
+    store: false,
+    max_output_tokens: 3000,
+    instructions: COPYWRITER_INSTRUCTIONS,
+    input: JSON.stringify({
+      negocio: brief.business,
+      objetivo: brief.objective,
+      campana: brief.campaign,
+      anuncio_base: { titulo: brief.headline ?? "", texto: brief.primaryText ?? "" },
+      rendimiento_7d: { ctr_pct: brief.ctr, frecuencia: brief.frequency, resultados: brief.results },
+    }),
+  });
+  const raw = response.output_text.trim().replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+  return variantsSchema.parse(JSON.parse(raw)).variants;
+}
