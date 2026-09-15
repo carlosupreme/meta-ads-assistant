@@ -340,12 +340,15 @@ function ValueStrip({ summary, limit }: { summary: MonitoringSummary; limit: num
 function FundingStrip({ organization }: { organization: Organization }) {
   const funding = organization.funding;
   if (!funding) return null;
-  const empty = funding.prepaid && funding.availableBalance === 0;
-  const title = !funding.prepaid ? "Cuenta con pago automático"
-    : funding.availableBalance !== undefined ? `Saldo disponible: ${money(funding.availableBalance)}` : "Cuenta de prepago";
-  const detail = empty ? "Meta reporta $0 de saldo: los anuncios no se entregarán hasta que acredite tu recarga."
-    : funding.paymentMethod ?? "Método de pago configurado en Meta";
-  return <section className={`funding-strip ${empty ? "empty" : ""}`}>
+  const noFunds = funding.prepaid && funding.availableBalance === 0;
+  const noPaymentMethod = !funding.prepaid && !funding.paymentMethod;
+  const title = noPaymentMethod ? "Sin método de pago"
+    : !funding.prepaid ? "Cuenta con pago automático"
+      : funding.availableBalance !== undefined ? `Saldo disponible: ${money(funding.availableBalance)}` : "Cuenta de prepago";
+  const detail = noFunds ? "Meta reporta $0 de saldo: los anuncios no se entregarán hasta que acredite tu recarga."
+    : noPaymentMethod ? "Meta no tiene un método de pago en esta cuenta: sus anuncios no se entregarán."
+      : funding.paymentMethod;
+  return <section className={`funding-strip ${noFunds || noPaymentMethod ? "empty" : ""}`}>
     <CircleDollarSign size={18}/>
     <p><b>{title}</b><span suppressHydrationWarning>{detail} · Según Meta, actualizado {timeAgo(funding.syncedAt).toLowerCase()}</span></p>
     {funding.spendCap > 0 && <div><strong>{money(funding.spendCap)}</strong><small>tope de gasto de la cuenta</small></div>}
