@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireApiSession } from "@/lib/auth";
 import { AD_SET_NAME, createMetaCampaign } from "@/lib/meta";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
+import { pageFields } from "@/lib/workspace";
 import type { Campaign } from "@/lib/types";
 
 // Vercel rejects request bodies above 4.5 MB, so the image must stay below that with the other fields.
@@ -18,6 +19,7 @@ const campaignSchema = z.object({
   destination: z.string().trim().max(500).optional(),
   leadFormId: z.string().trim().max(40).optional(),
   messagingApp: z.enum(["WHATSAPP", "MESSENGER"]).optional(),
+  pageId: z.string().trim().max(40).optional(),
   dailyBudget: z.coerce.number().min(100),
   publish: z.enum(["true", "false"]).transform((value) => value === "true"),
 });
@@ -52,6 +54,10 @@ export async function POST(request: Request) {
   const current = await readWorkspace(session.workspaceId);
   const organization = current.organizations.find((item) => item.id === input.organizationId);
   if (!organization) return NextResponse.json({ error: "Negocio no encontrado" }, { status: 404 });
+  // Any Page the profile manages can publish for this ad account; the business default is used otherwise.
+  const page = input.pageId ? current.pages?.find((item) => item.id === input.pageId) : undefined;
+  if (input.pageId && !page) return NextResponse.json({ error: "Esa página no está disponible para tu perfil de Meta. Sincroniza e intenta de nuevo." }, { status: 400 });
+  const publisher = page ? { ...organization, ...pageFields(page) } : organization;
 
   const connected = current.metaConnection.status === "connected";
   let campaignId = `cmp-${Date.now()}`;
@@ -65,7 +71,7 @@ export async function POST(request: Request) {
     if (!token) return NextResponse.json({ error: "La conexión con Meta no tiene un token válido" }, { status: 409 });
     if (!image) return NextResponse.json({ error: "Sube la imagen del anuncio para crearlo en Meta." }, { status: 400 });
     try {
-      const created = await createMetaCampaign(token, organization, {
+      const created = await createMetaCampaign(token, publisher, {
         ...input,
         image: { base64: Buffer.from(await image.arrayBuffer()).toString("base64") },
       });

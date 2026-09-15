@@ -8,7 +8,7 @@ import {
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { Ad, AgentAction, AutomationMode, Campaign, MetricPoint, NavView, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AutomationMode, Campaign, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
@@ -259,7 +259,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
     connections: <ConnectionsView data={data} syncing={syncing} onSync={syncMeta} setToast={setToast} />,
-    settings: <SettingsView key={organization.id} organization={organization} aiStatus={aiStatus} aiModels={aiModels} onAiModelSaved={async (message) => { const result = await fetchAiStatus(); if (result) { setAiStatus(result.status); setAiModels(result.models); } setToast(message); }} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
+    settings: <SettingsView key={organization.id} organization={organization} pages={data.pages ?? []} aiStatus={aiStatus} aiModels={aiModels} onAiModelSaved={async (message) => { const result = await fetchAiStatus(); if (result) { setAiStatus(result.status); setAiModels(result.models); } setToast(message); }} onSaved={async () => { await refreshWorkspace(); setToast("Configuración guardada."); }} />,
   };
 
   return (
@@ -314,7 +314,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
         <div className="content">{pageContent[view]}</div>
       </main>
 
-      {campaignModal && <CampaignModal organization={organization} connected={data.metaConnection.status === "connected"} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
+      {campaignModal && <CampaignModal organization={organization} pages={data.pages ?? []} connected={data.metaConnection.status === "connected"} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
       {modeModal && <ModeModal current={organization.mode} onClose={() => setModeModal(false)} onSelect={updateMode} />}
       {toast && <div className="toast"><Check size={17} />{toast}<button onClick={() => setToast(null)}><X size={15} /></button></div>}
     </div>
@@ -887,13 +887,14 @@ function AiModelPanel({ status, models, onSaved }: { status: AiStatus | null; mo
   </div>;
 }
 
-function SettingsView({ organization, onSaved, aiStatus, aiModels, onAiModelSaved }: { organization: Organization; onSaved: () => void; aiStatus: AiStatus | null; aiModels: string[]; onAiModelSaved: (message: string) => void }) {
+function SettingsView({ organization, pages, onSaved, aiStatus, aiModels, onAiModelSaved }: { organization: Organization; pages: ManagedPage[]; onSaved: () => void; aiStatus: AiStatus | null; aiModels: string[]; onAiModelSaved: (message: string) => void }) {
+  const [pageId, setPageId] = useState(organization.pageId ?? "");
   const [limit, setLimit] = useState(String(organization.monthlyLimit));
   const [value, setValue] = useState(String(organization.resultValue));
   const [roasTarget, setRoasTarget] = useState(String(targetRoas(organization)));
   const [saving, setSaving] = useState(false);
-  async function save(event: FormEvent) { event.preventDefault(); setSaving(true); await fetch("/api/workspace", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "organization", organizationId: organization.id, monthlyLimit: Number(limit), targetRoas: Number(roasTarget), resultValue: Number(value) }) }); setSaving(false); onSaved(); }
-  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><AiModelPanel status={aiStatus} models={aiModels} onSaved={onAiModelSaved}/><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/><label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
+  async function save(event: FormEvent) { event.preventDefault(); setSaving(true); await fetch("/api/workspace", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "organization", organizationId: organization.id, monthlyLimit: Number(limit), targetRoas: Number(roasTarget), resultValue: Number(value), ...(pageId && pageId !== organization.pageId && { pageId }) }) }); setSaving(false); onSaved(); }
+  return <div className="page-stack narrow"><div className="page-intro"><div><h2>Límites y medición</h2><p>Estas reglas siempre se respetan, incluso en modo YOLO.</p></div></div><AiModelPanel status={aiStatus} models={aiModels} onSaved={onAiModelSaved}/><form className="panel settings-form" onSubmit={save}><PanelHeader title="Guardrails obligatorios" subtitle={`Aplican a ${organization.name}`}/>{pages.length > 0 && <label><span>Página predeterminada <small>META</small></span><select className="settings-select" value={pageId} onChange={(event) => setPageId(event.target.value)}>{!pageId && <option value="">Elige una página</option>}{pages.map((page) => <option key={page.id} value={page.id}>{page.name}{page.instagramHandle ? ` · ${page.instagramHandle}` : ""}</option>)}</select><small>Se preselecciona al crear campañas de {organization.name}; puedes cambiarla en cada campaña.</small></label>}<label><span>Límite mensual de inversión <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="100" value={limit} onChange={(event) => setLimit(event.target.value)}/><em>MXN</em></div><small>El agente no permitirá que el gasto administrado supere esta cantidad.</small></label><label><span>ROAS objetivo <small>INGRESOS ÷ INVERSIÓN</small></span><div className="money-input"><input type="number" min="0.5" max="50" step="0.1" value={roasTarget} onChange={(event) => setRoasTarget(event.target.value)}/><em>×</em></div><small>Por debajo de 80% de esta meta el agente reduce presupuesto; 20% por encima, lo escala.</small></label><label><span>Valor estimado por resultado <small>MXN</small></span><div className="money-input"><b>$</b><input type="number" min="0" value={value} onChange={(event) => setValue(event.target.value)}/><em>MXN</em></div><small>Se usa para estimar retorno cuando Meta no reporta el valor de una compra.</small></label><div className="hard-rules"><div><ShieldCheck size={17}/><span><b>Ritmo de gasto</b><small>La proyección a fin de mes nunca puede superar el límite</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Variación máxima de presupuesto</b><small>20% acumulado por campaña en 24 horas</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Entrega continua</b><small>Nunca se pausa el último anuncio activo de un conjunto</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Acción destructiva</b><small>El agente nunca elimina campañas, solo las pausa</small></span><em>FIJO</em></div><div><ShieldCheck size={17}/><span><b>Interruptor de emergencia</b><small>Puedes pasar a Observador en cualquier momento</small></span><em>ACTIVO</em></div></div><div className="form-footer"><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>} Guardar cambios</button></div></form></div>;
 }
 
 type MessagingApp = "WHATSAPP" | "MESSENGER";
@@ -920,11 +921,13 @@ function isWebsite(value: string): boolean {
   }
 }
 
-function CampaignModal({ organization, connected, defaultPublish, onClose, onCreated }: { organization: Organization; connected: boolean; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
+function CampaignModal({ organization, pages, connected, defaultPublish, onClose, onCreated }: { organization: Organization; pages: ManagedPage[]; connected: boolean; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [form, setForm] = useState({ offer: "", objective: organization.objective, destination: "", leadFormId: "", messagingApp: "WHATSAPP" as MessagingApp, dailyBudget: 500, headline: "", primaryText: "", publish: defaultPublish });
+  const [form, setForm] = useState({ offer: "", objective: organization.objective, pageId: organization.pageId ?? pages[0]?.id ?? "", destination: "", leadFormId: "", messagingApp: "WHATSAPP" as MessagingApp, dailyBudget: 500, headline: "", primaryText: "", publish: defaultPublish });
+  const choosePages = connected && pages.length > 0;
+  const selectedPage = pages.find((page) => page.id === form.pageId);
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
@@ -933,11 +936,11 @@ function CampaignModal({ organization, connected, defaultPublish, onClose, onCre
 
   useEffect(() => {
     if (form.objective !== "Prospectos" || !connected || leadForms) return;
-    fetch(`/api/meta/lead-forms?organizationId=${encodeURIComponent(organization.id)}`, { cache: "no-store" })
+    fetch(`/api/meta/lead-forms?organizationId=${encodeURIComponent(organization.id)}&pageId=${encodeURIComponent(form.pageId)}`, { cache: "no-store" })
       .then((response) => response.json())
       .then((result) => setLeadForms({ forms: result.forms ?? [], reason: result.reason ?? result.error }))
       .catch(() => setLeadForms({ forms: [], reason: "No fue posible cargar los formularios." }));
-  }, [form.objective, connected, leadForms, organization.id]);
+  }, [form.objective, form.pageId, connected, leadForms, organization.id]);
 
   function chooseImage(file: File | null) {
     if (preview) URL.revokeObjectURL(preview);
@@ -953,7 +956,7 @@ function CampaignModal({ organization, connected, defaultPublish, onClose, onCre
       : true;
   const copyReady = form.headline.trim().length >= 3 && form.headline.trim().length <= 60 && form.primaryText.trim().length >= 10 && form.primaryText.trim().length <= 500;
   const canContinue = step === 1
-    ? form.offer.trim().length >= 3 && destinationReady
+    ? form.offer.trim().length >= 3 && destinationReady && (!choosePages || Boolean(selectedPage))
     : estimatedMonth <= organization.monthlyLimit && copyReady && (!connected || Boolean(image));
 
   function next() {
@@ -977,6 +980,7 @@ function CampaignModal({ organization, connected, defaultPublish, onClose, onCre
     body.set("primaryText", form.primaryText);
     body.set("dailyBudget", String(form.dailyBudget));
     body.set("publish", String(form.publish));
+    if (choosePages && form.pageId) body.set("pageId", form.pageId);
     if (form.objective === "Ventas") body.set("destination", form.destination);
     if (form.objective === "Prospectos" && form.leadFormId) body.set("leadFormId", form.leadFormId);
     if (form.objective === "Mensajes") body.set("messagingApp", form.messagingApp);
@@ -995,13 +999,14 @@ function CampaignModal({ organization, connected, defaultPublish, onClose, onCre
     : form.objective === "Prospectos" ? leadForms?.forms.find((item) => item.id === form.leadFormId)?.name || "Formulario instantáneo"
       : form.messagingApp === "WHATSAPP" ? "WhatsApp" : "Messenger";
   const publishNote = connected
-    ? form.publish ? "Se creará en Meta y empezará a entregarse." : "Se creará en Meta en pausa para que la actives después."
+    ? `${selectedPage ? `Publica la Página ${selectedPage.name}. ` : ""}${form.publish ? "Se creará en Meta y empezará a entregarse." : "Se creará en Meta en pausa para que la actives después."}`
     : "Modo demo: el lanzamiento se simula.";
 
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal campaign-modal"><div className="modal-head"><div><span>CREADOR DE CAMPAÑAS</span><h2>Nueva campaña</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="stepper"><div className={step >= 1 ? "active" : ""}><span>{step > 1 ? <Check size={13}/> : "1"}</span>Objetivo</div><i/><div className={step >= 2 ? "active" : ""}><span>{step > 2 ? <Check size={13}/> : "2"}</span>Anuncio</div><i/><div className={step >= 3 ? "active" : ""}><span>3</span>Confirmar</div></div>
     <div className="modal-body">
       {step === 1 && <div className="form-step">
         <div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus maxLength={120} placeholder="Ej. Colección de muebles de otoño" value={form.offer} onChange={(e) => setForm({ ...form, offer: e.target.value })}/><small>Describe el producto, servicio u oferta en una frase.</small></div>
+        {choosePages && <div className="field"><label>Página que publica</label><select value={form.pageId} onChange={(e) => { setForm({ ...form, pageId: e.target.value, leadFormId: "" }); setLeadForms(null); }}>{!selectedPage && <option value="">Elige una página</option>}{pages.map((page) => <option key={page.id} value={page.id}>{page.name}{page.instagramHandle ? ` · ${page.instagramHandle}` : ""}</option>)}</select><small>El anuncio sale a nombre de esta Página{selectedPage?.instagramHandle ? ` y de ${selectedPage.instagramHandle} en Instagram` : ""}; la inversión se carga a {organization.name}.</small></div>}
         <div className="field"><label>Objetivo principal</label><div className="objective-grid">{(["Ventas", "Prospectos", "Mensajes"] as const).map((objective) => <button key={objective} type="button" className={form.objective === objective ? "selected" : ""} onClick={() => setForm({ ...form, objective })}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}</b><small>{OBJECTIVE_HINTS[objective]}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div></div>
         {form.objective === "Ventas" && <div className="field"><label>Página de destino</label><input type="url" placeholder="https://tusitio.mx/producto" value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })}/><small>Debe tener instalado el Pixel con el evento Purchase.</small></div>}
         {form.objective === "Prospectos" && <div className="field"><label>Formulario instantáneo</label>

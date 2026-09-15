@@ -4,6 +4,7 @@ import { listChatModels } from "@/lib/ai/openai";
 import { requireApiSession } from "@/lib/auth";
 import { toSafeWorkspace } from "@/lib/safe-workspace";
 import { readWorkspace, updateWorkspace } from "@/lib/store";
+import { pageFields } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ const updateSchema = z.discriminatedUnion("action", [
     monthlyLimit: z.number().positive().optional(),
     targetRoas: z.number().min(0.5).max(50).optional(),
     resultValue: z.number().nonnegative().optional(),
+    pageId: z.string().min(1).max(40).optional(),
   }),
   z.object({ action: z.literal("ai-model"), model: z.string().min(1).max(100) }),
   z.object({ action: z.literal("branding"), agencyName: z.string().trim().min(2).max(60), accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/) }),
@@ -40,6 +42,13 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Agrega al menos un correo para activar el resumen semanal." }, { status: 400 });
   }
 
+  if (input.action === "organization" && input.pageId) {
+    const { pages } = await readWorkspace(session.workspaceId);
+    if (!pages?.some((page) => page.id === input.pageId)) {
+      return NextResponse.json({ error: "Esa página no está disponible para tu perfil de Meta. Sincroniza e intenta de nuevo." }, { status: 400 });
+    }
+  }
+
   if (input.action === "ai-model") {
     // Only models this API key can actually call are accepted.
     const models = await listChatModels().catch(() => null);
@@ -49,9 +58,11 @@ export async function PATCH(request: Request) {
 
   const workspace = await updateWorkspace(session.workspaceId, (current) => {
     if (input.action === "organization") {
+      const page = input.pageId ? current.pages?.find((item) => item.id === input.pageId) : undefined;
       current.organizations = current.organizations.map((organization) => organization.id === input.organizationId
         ? {
           ...organization,
+          ...(page && pageFields(page)),
           ...(input.mode && { mode: input.mode }),
           ...(input.monthlyLimit !== undefined && { monthlyLimit: input.monthlyLimit }),
           ...(input.targetRoas !== undefined && { targetRoas: input.targetRoas }),

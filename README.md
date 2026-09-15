@@ -166,6 +166,7 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 | Prospectos | `OUTCOME_LEADS` | `LEAD_GENERATION` en el anuncio | Registrarte → formulario instantáneo | Formulario activo en la Página |
 | Mensajes | `OUTCOME_ENGAGEMENT` | `CONVERSATIONS` en WhatsApp o Messenger | Enviar mensaje | WhatsApp Business vinculado a la Página (solo WhatsApp) |
 
+- **Página que publica**: el creador lista todas las Páginas que administra el perfil conectado (las suyas y las de portafolios comerciales autorizados) y preselecciona la página predeterminada del negocio, que se cambia en **Configuración**. La sincronización conserva la página elegida mientras el perfil la siga administrando; si nunca se eligió, usa la página con nombre parecido a la cuenta publicitaria o la primera.
 - La imagen es obligatoria: JPG o PNG de hasta 4 MB (Vercel limita las solicitudes a 4.5 MB). Recomendado 1080×1080 px.
 - El título (hasta 60 caracteres) y el texto principal se prellenan según el objetivo y se pueden editar.
 - Todo se crea en pausa; **Publicar al terminar** lo activa. Sin publicar, la campaña queda en Meta en pausa, lista para activarse.

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
-import type { AccountFunding, Ad, AdSetBudget, Campaign, MetricPoint, Organization, WorkspaceData } from "./types";
-import { parseAvailableBalance } from "./workspace";
+import type { AccountFunding, Ad, AdSetBudget, Campaign, ManagedPage, MetricPoint, Organization, WorkspaceData } from "./types";
+import { defaultPageFor, mergePages, parseAvailableBalance } from "./workspace";
 
 const version = process.env.META_GRAPH_VERSION || "v26.0";
 const graphBase = `https://graph.facebook.com/${version}`;
@@ -221,8 +221,27 @@ export async function fetchAdAccounts(token: string): Promise<MetaAdAccount[]> {
   return graphGetAll<MetaAdAccount>("me/adaccounts", token, { fields: "id,name,currency,account_status,is_prepay_account,amount_spent,spend_cap,funding_source_details", limit: "100" });
 }
 
-export async function fetchManagedPages(token: string): Promise<MetaPage[]> {
-  return graphGetAll<MetaPage>("me/accounts", token, { fields: "id,name,instagram_business_account{id,username}", limit: "100" });
+const PAGE_FIELDS = "id,name,instagram_business_account{id,username}";
+
+const toManagedPage = (page: MetaPage, source: ManagedPage["source"]): ManagedPage => ({
+  id: page.id,
+  name: page.name,
+  instagramAccountId: page.instagram_business_account?.id,
+  instagramHandle: page.instagram_business_account?.username ? `@${page.instagram_business_account.username}` : undefined,
+  source,
+});
+
+/** Pages the profile can publish with: its own page roles plus the pages of the business portfolios it granted. */
+export async function fetchManagedPages(token: string): Promise<ManagedPage[]> {
+  const own = await graphGetAll<MetaPage>("me/accounts", token, { fields: PAGE_FIELDS, limit: "100" });
+  const businesses = await graphGetAll<{ id: string }>("me/businesses", token, { fields: "id", limit: "50" }).catch(() => []);
+  const portfolioPages = await Promise.all(businesses.flatMap((business) => ["owned_pages", "client_pages"].map((edge) =>
+    // Portfolios not selected when connecting answer with a permission error; they are skipped.
+    graphGetAll<MetaPage>(`${business.id}/${edge}`, token, { fields: PAGE_FIELDS, limit: "100" }).catch(() => [] as MetaPage[]))));
+  return mergePages(
+    own.map((page) => toManagedPage(page, "profile")),
+    portfolioPages.flat().map((page) => toManagedPage(page, "business")),
+  );
 }
 
 async function fetchFirstPixel(accountId: string, token: string): Promise<string | undefined> {
@@ -250,7 +269,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
   for (const [index, account] of accounts.entries()) {
     const organizationId = `meta-${account.id.replace("act_", "")}`;
     const previous = workspace.organizations.find((item) => item.adAccountId === account.id);
-    const page = previous?.pageId ? pages.find((item) => item.id === previous.pageId) : pages[index] || pages[0];
+    const page = defaultPageFor(account.name, pages, previous?.pageId);
     const resultValue = previous?.resultValue || 0;
     const [campaignRows, insightRows, dailyResponse, adSetRows, adRows, adInsightRows, pixelId] = await Promise.all([
       graphGetAll<MetaCampaign>(`${account.id}/campaigns`, token, {
@@ -353,10 +372,10 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
       name: account.name,
       initials: account.name.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase(),
       color: ["#7c5cff", "#f97349", "#13b981", "#2786ff"][index % 4],
-      pageName: page?.name || previous?.pageName || "Página por vincular",
-      pageId: page?.id || previous?.pageId,
-      instagramHandle: page?.instagram_business_account?.username ? `@${page.instagram_business_account.username}` : previous?.instagramHandle || "Instagram por vincular",
-      instagramAccountId: page?.instagram_business_account?.id || previous?.instagramAccountId,
+      pageName: page?.name ?? previous?.pageName ?? "Página por vincular",
+      pageId: page?.id ?? previous?.pageId,
+      instagramHandle: page ? page.instagramHandle ?? "Instagram por vincular" : previous?.instagramHandle ?? "Instagram por vincular",
+      instagramAccountId: page ? page.instagramAccountId : previous?.instagramAccountId,
       pixelId: pixelId || previous?.pixelId,
       adAccountId: account.id,
       currency: "MXN",
@@ -390,6 +409,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
     organizations: actualOrganizations,
     campaigns: actualCampaigns,
     ads: actualAds,
+    pages,
     metrics: actualMetrics,
   };
 }

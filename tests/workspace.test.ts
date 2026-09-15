@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { demoData } from "../lib/demo-data.ts";
-import type { Campaign, Organization, WorkspaceData } from "../lib/types.ts";
-import { applyMetaConnection, mergeSyncedWorkspace, parseAvailableBalance } from "../lib/workspace.ts";
+import type { Campaign, ManagedPage, Organization, WorkspaceData } from "../lib/types.ts";
+import { applyMetaConnection, defaultPageFor, mergePages, mergeSyncedWorkspace, parseAvailableBalance } from "../lib/workspace.ts";
 
 const connection: WorkspaceData["metaConnection"] = {
   status: "connected", userName: "Dueño", connectedAt: "2026-09-13T12:00:00.000Z", lastSyncAt: "2026-09-13T12:00:00.000Z", encryptedAccessToken: "token",
@@ -79,6 +79,38 @@ describe("Meta connection", () => {
     const report = { clientEmails: ["cliente@empresa.mx"], weeklyEmail: true };
     const current: WorkspaceData = { ...structuredClone(demoData), metaConnection: connection, organizations: [realOrganization({ report })] };
     assert.deepEqual(mergeSyncedWorkspace(current, synced()).organizations[0].report, report);
+  });
+});
+
+describe("pages", () => {
+  const pages: ManagedPage[] = [
+    { id: "p1", name: "Decor Centro", source: "profile" },
+    { id: "p2", name: "DecorSport", source: "profile" },
+    { id: "p3", name: "Magaña Sports", instagramAccountId: "ig3", instagramHandle: "@magana", source: "business" },
+  ];
+
+  it("keeps the page a business already uses while it is still available", () => {
+    assert.equal(defaultPageFor("Alberto López", pages, "p2")?.id, "p2");
+    assert.equal(defaultPageFor("Alberto López", pages, "gone")?.id, "p1");
+  });
+
+  it("prefers the page named like the ad account, otherwise the first", () => {
+    assert.equal(defaultPageFor("Magaña Sports", pages)?.id, "p3");
+    assert.equal(defaultPageFor("Alberto López", pages)?.id, "p1");
+    assert.equal(defaultPageFor("Test", []), undefined);
+  });
+
+  it("lists each page once, keeping the profile's copy", () => {
+    const merged = mergePages([pages[0]], [{ ...pages[0], source: "business" }, pages[2]]);
+    assert.deepEqual(merged.map((page) => [page.id, page.source]), [["p1", "profile"], ["p3", "business"]]);
+  });
+
+  it("keeps the page chosen in Pulso through a sync", () => {
+    const current: WorkspaceData = { ...structuredClone(demoData), metaConnection: connection, organizations: [realOrganization({ pageId: "p3", pageName: "Magaña Sports" })] };
+    const next = mergeSyncedWorkspace(current, synced({ pages, organizations: [realOrganization({ pageId: "p1", pageName: "Decor Centro" })] }));
+    assert.equal(next.organizations[0].pageId, "p3");
+    assert.equal(next.organizations[0].instagramHandle, "@magana");
+    assert.equal(next.pages?.length, 3);
   });
 });
 

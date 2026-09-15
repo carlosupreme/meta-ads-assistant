@@ -35,6 +35,16 @@ export interface Organization {
   funding?: AccountFunding;
 }
 
+/** A Facebook Page the connected profile can advertise with. */
+export interface ManagedPage {
+  id: string;
+  name: string;
+  instagramAccountId?: string;
+  instagramHandle?: string;
+  /** Where Meta listed it: the profile's own page roles or a business portfolio. */
+  source: "profile" | "business";
+}
+
 /** Funds and payment setup of the ad account, as Meta reports them on the last sync. */
 export interface AccountFunding {
   prepaid: boolean;
@@ -252,6 +262,8 @@ export interface WorkspaceData {
   organizations: Organization[];
   campaigns: Campaign[];
   ads: Ad[];
+  /** Every Page the connected Meta profile can publish with, shared by all its ad accounts. */
+  pages?: ManagedPage[];
   metrics: Record<string, MetricPoint[]>;
   activities: AgentActivity[];
   alerts: AlertItem[];
