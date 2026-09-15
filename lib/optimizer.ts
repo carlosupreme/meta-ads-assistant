@@ -1,7 +1,7 @@
 // Pure optimization core: planning rules, hard guardrails and state transitions.
 // It only has type imports so it runs on the server, in the browser and under `node --test`.
 import type {
-  Ad, AdVariant, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, CampaignReview, CampaignVerdict,
+  Ad, AdVariant, AgentAction, AgentActionType, AgentActivity, AgentName, AlertItem, AutomationMode, BudgetChange, Campaign, CampaignReview, CampaignVerdict,
   MonitoringDay, Organization, WorkspaceData,
 } from "./types";
 import type { AiActionProposal } from "./ai/contracts";
@@ -13,6 +13,7 @@ export const GUARDRAILS = {
   maxActionsPerRun: 3,
   pendingTtlHours: 48,
   fatigueFrequency: 4,
+  audienceSaturationFrequency: 3,
   fatigueCtrRatio: 0.7,
   fatigueMinImpressions: 1000,
   scaleStep: 0.15,
@@ -584,7 +585,7 @@ export function activityFromAction(action: AgentAction): AgentActivity {
   const entry = byStatus[action.status] ?? { title: capitalize(description), kind: "insight" as const, impact: action.impact };
   return {
     id: newId("act"), organizationId: action.organizationId, agent: action.agent,
-    title: entry.title, detail: action.reason, impact: entry.impact, kind: entry.kind, createdAt: "Ahora",
+    title: entry.title, detail: action.reason, impact: entry.impact, kind: entry.kind, createdAt: action.resolvedAt ?? action.createdAt,
   };
 }
 
@@ -593,7 +594,7 @@ function alertsFromActions(actions: AgentAction[]): AlertItem[] {
   for (const organizationId of new Set(actions.map((action) => action.organizationId))) {
     const own = actions.filter((action) => action.organizationId === organizationId);
     const alert = (fields: Pick<AlertItem, "severity" | "title" | "detail">): AlertItem =>
-      ({ id: newId("al"), organizationId, createdAt: "Ahora", read: false, ...fields });
+      ({ id: newId("al"), organizationId, createdAt: own[0].resolvedAt ?? own[0].createdAt, read: false, ...fields });
     if (own.some((action) => action.agent === "Supervisor" && action.type === "pause_campaign" && action.status === "executed")) {
       alerts.push(alert({ severity: "critical", title: "Límite mensual alcanzado", detail: "Pulso pausó las campañas activas para no superar tu límite." }));
     }
@@ -714,7 +715,86 @@ export function commitAgentRun(current: WorkspaceData, run: AgentRunOutcome, now
   };
 }
 
-const VERDICT_ORDER: CampaignVerdict[] = ["attention", "watch", "learning", "no_data", "good", "excellent", "paused", "draft"];
+export interface AgentBrief {
+  agent: AgentName;
+  /** alert: something for the owner to look at; ok: watched and fine; idle: nothing to watch yet. */
+  state: "alert" | "ok" | "idle";
+  status: string;
+  /** What the agent sees right now in the account, with the same thresholds it acts on. */
+  signal: string;
+}
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/** Live diagnosis per agent from the current account data, so every agent card says what it is watching. */
+export function agentBriefs(
+  workspace: Pick<WorkspaceData, "campaigns" | "ads">,
+  organization: Organization,
+  now: Date,
+  aiEnabled: boolean,
+): AgentBrief[] {
+  const campaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id);
+  const active = campaigns.filter((campaign) => campaign.status === "ACTIVE");
+  const ads = workspace.ads.filter((ad) => ad.organizationId === organization.id && ad.status === "ACTIVE" && active.some((campaign) => campaign.id === ad.campaignId));
+  const brief = (agent: AgentName, state: AgentBrief["state"], status: string, signal: string): AgentBrief => ({ agent, state, status, signal });
+  const noActive = (agent: AgentName) => brief(agent, "idle", "Sin datos", campaigns.length ? "No hay campañas activas que vigilar." : "Aún no hay campañas en esta cuenta.");
+
+  const projected = projectedMonthSpend(organization, workspace.campaigns, now);
+  const supervisor = organization.monthlyLimit <= 0
+    ? brief("Supervisor", "idle", "Sin límite", "Define un límite mensual en Ajustes para proteger el presupuesto.")
+    : organization.spentThisMonth >= organization.monthlyLimit
+      ? brief("Supervisor", "alert", "Límite alcanzado", `Gastado ${formatMoney(organization.spentThisMonth)} de ${formatMoney(organization.monthlyLimit)}; las campañas activas se pausan.`)
+      : brief("Supervisor", projected > organization.monthlyLimit ? "alert" : "ok", projected > organization.monthlyLimit ? "Sobre el ritmo" : "Al día",
+        `Proyección del mes ${formatMoney(projected)} de ${formatMoney(organization.monthlyLimit)} (${Math.round((projected / organization.monthlyLimit) * 100)}%).`);
+
+  const target = targetRoas(organization);
+  const useValue = active.some((campaign) => campaign.revenue > 0);
+  const totalResults = active.reduce((sum, campaign) => sum + campaign.results, 0);
+  const averageCpa = totalResults ? active.reduce((sum, campaign) => sum + campaign.spend, 0) / totalResults : 0;
+
+  const waste = active.filter((campaign) => !campaign.results && campaign.dailyBudget > 0 && campaign.spend >= campaign.dailyBudget * 3);
+  const analyst = active.length
+    ? brief("Analista", waste.length ? "alert" : "ok", waste.length ? "Atención" : "Al día", waste.length
+      ? `${plural(waste.length, "campaña gasta", "campañas gastan")} más de tres días de presupuesto sin resultados.`
+      : `${plural(active.length, "campaña activa", "campañas activas")} sin gasto desperdiciado.`)
+    : noActive("Analista");
+
+  const mature = active.filter((campaign) => hasManagedBudget(campaign) && isMature(campaign));
+  const under = mature.filter((campaign) => useValue ? campaign.roas < target * 0.8 : averageCpa > 0 && campaign.results > 0 && campaign.costPerResult > averageCpa * 1.5);
+  const scalable = mature.filter((campaign) => useValue ? campaign.roas >= target * 1.2 : averageCpa > 0 && campaign.results > 0 && campaign.costPerResult <= averageCpa * 0.75);
+  const budget = !active.length ? noActive("Presupuesto")
+    : !mature.length ? brief("Presupuesto", "ok", "Aprendiendo", "Ninguna campaña junta dos días de presupuesto todavía; espera datos antes de mover dinero.")
+      : brief("Presupuesto", under.length ? "alert" : "ok", under.length ? "Atención" : "Al día",
+        `${under.length} bajo la meta · ${scalable.length} para escalar · ${plural(mature.length, "campaña evaluada", "campañas evaluadas")}${useValue ? ` contra ROAS ${target.toFixed(2)}×` : " por costo por resultado"}.`);
+
+  const frequencyOf = (campaignId: string) => {
+    const own = ads.filter((ad) => ad.campaignId === campaignId && ad.impressions > 0);
+    const impressions = own.reduce((sum, ad) => sum + ad.impressions, 0);
+    return impressions ? own.reduce((sum, ad) => sum + ad.frequency * ad.impressions, 0) / impressions : undefined;
+  };
+  const frequencies = active.flatMap((campaign) => {
+    const frequency = frequencyOf(campaign.id);
+    return frequency === undefined ? [] : [frequency];
+  });
+  const saturated = frequencies.filter((frequency) => frequency >= GUARDRAILS.audienceSaturationFrequency).length;
+  const audiences = !frequencies.length ? (active.length ? brief("Audiencias", "idle", "Sin datos", "Los anuncios activos aún no tienen impresiones.") : noActive("Audiencias"))
+    : brief("Audiencias", saturated ? "alert" : "ok", saturated ? "Saturándose" : "Al día",
+      `Frecuencia promedio ${(frequencies.reduce((sum, value) => sum + value, 0) / frequencies.length).toFixed(1)}${saturated ? ` · ${plural(saturated, "público ve", "públicos ven")} los anuncios ${GUARDRAILS.audienceSaturationFrequency}+ veces` : ""}.`);
+
+  const fatigued = ads.filter((ad) => ad.frequency >= GUARDRAILS.fatigueFrequency && ad.impressions >= GUARDRAILS.fatigueMinImpressions).length;
+  const creatives = !ads.length ? noActive("Creativos")
+    : brief("Creativos", fatigued ? "alert" : "ok", fatigued ? "Fatiga" : "Al día",
+      `${fatigued} de ${plural(ads.length, "anuncio activo", "anuncios activos")} con fatiga${aiEnabled ? "; escribe variantes nuevas con IA." : "; sin IA solo pausa, no crea variantes."}`);
+
+  const strategist = !campaigns.length ? brief("Estratega", "alert", "Sin campañas", "Crea tu primera campaña desde Campañas.")
+    : !active.length ? brief("Estratega", "alert", "Sin entrega", "Ninguna campaña está activa; tu cuenta no está generando resultados.")
+      : !aiEnabled ? brief("Estratega", "idle", "Sin IA", "Configura OpenAI para recibir propuestas de estrategia en cada análisis.")
+        : brief("Estratega", "ok", "Al día", `Analiza ${plural(active.length, "campaña activa", "campañas activas")} con IA en cada análisis.`);
+
+  return [supervisor, strategist, analyst, budget, audiences, creatives];
+}
+
+const VERDICT_ORDER: CampaignVerdict[] =["attention", "watch", "learning", "no_data", "good", "excellent", "paused", "draft"];
 
 const ACTION_STATE: Record<AgentAction["status"], string> = {
   executed: "Aplicado",

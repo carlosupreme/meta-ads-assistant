@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   actionsFromAi, buildVariantSpec, checkGuardrails, commitAgentRun, creativeRefreshTargets, lastStatusChanges, monitoringSummary, planRuleActions,
-  projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns,
+  projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns, agentBriefs,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -273,6 +273,34 @@ describe("monitoring", () => {
     const old = { date: "2026-07-01", runs: 5, campaignsChecked: 1, adsChecked: 1, anomalies: 0, blocked: 0, executed: 0, lastRunAt: "2026-07-01T00:00:00.000Z" };
     const next = commitAgentRun(workspace({ monitoring: { org: [old] } }), run(), now);
     assert.deepEqual(next.monitoring?.org.map((day) => day.date), [now.toISOString().slice(0, 10)]);
+  });
+});
+
+describe("agent briefs", () => {
+  const briefOf = (briefs: ReturnType<typeof agentBriefs>, agent: string) => briefs.find((brief) => brief.agent === agent);
+
+  it("gives every agent a diagnosis from the account data", () => {
+    const briefs = agentBriefs(workspace({ ads: [ad()] }), organization(), now, true);
+    assert.equal(briefs.length, 6);
+    assert.ok(briefs.every((brief) => brief.signal.length > 0));
+    assert.equal(briefOf(briefs, "Supervisor")?.state, "ok");
+  });
+
+  it("flags pacing, waste, saturation and fatigue with the planner's thresholds", () => {
+    const campaigns = [campaign({ id: "c1", roas: 2 }), campaign({ id: "c2", results: 0, spend: 4_000, revenue: 0, roas: 0 })];
+    const ads = [ad({ campaignId: "c1", frequency: 4.5, impressions: 5_000 })];
+    const briefs = agentBriefs(workspace({ campaigns, ads }), organization({ monthlyLimit: 20_000 }), now, true);
+    assert.equal(briefOf(briefs, "Supervisor")?.state, "alert");
+    assert.equal(briefOf(briefs, "Analista")?.state, "alert");
+    assert.equal(briefOf(briefs, "Presupuesto")?.state, "alert");
+    assert.equal(briefOf(briefs, "Audiencias")?.state, "alert");
+    assert.equal(briefOf(briefs, "Creativos")?.state, "alert");
+  });
+
+  it("says when an agent has nothing to work with", () => {
+    const briefs = agentBriefs(workspace({ campaigns: [campaign({ status: "PAUSED" })] }), organization(), now, false);
+    assert.equal(briefOf(briefs, "Analista")?.state, "idle");
+    assert.equal(briefOf(briefs, "Estratega")?.status, "Sin entrega");
   });
 });
 

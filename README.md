@@ -175,6 +175,19 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - Si Meta rechaza el conjunto, el creativo o el anuncio, Pulso borra la campaña vacía que alcanzó a crear y muestra la explicación de Meta (por ejemplo, que la Página no tiene WhatsApp Business vinculado). Si solo falla la activación, todo queda en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
+## Equipo de agentes
+
+Cada tarjeta en **Agentes IA** muestra un diagnóstico en vivo con los mismos umbrales con los que el agente actúa, su estado (al día, alerta o sin datos) y **Ver decisiones**, que abre su historial con el estado actual de cada cambio:
+
+| Agente | Qué vigila y hace |
+| --- | --- |
+| Supervisor | Proyección del mes contra el límite; reduce el ritmo, pausa al tope y reactiva el mes siguiente |
+| Estratega | Propuestas de estrategia con IA (requiere OpenAI) y registro de campañas creadas |
+| Analista | Campañas con más de tres días de presupuesto sin resultados y anuncios que no convierten |
+| Presupuesto | Campañas bajo la meta (reduce 20%) y la mejor sobre la meta (escala hasta 15%) |
+| Audiencias | Frecuencia promedio por campaña; alerta desde 3 (solo avisa, no cambia nada) |
+| Creativos | Anuncios con fatiga (frecuencia ≥ 4): pausa, reactiva tras 7 días y crea variantes con IA |
+
 ## Revisión por campaña
 
 Cada análisis (manual o del monitor) deja en **Agentes IA → Revisión por campaña** un veredicto y un mensaje para **todas** las campañas del negocio, también las que van bien, ordenadas con los problemas primero y filtrables por veredicto:

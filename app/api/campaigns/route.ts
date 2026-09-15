@@ -129,7 +129,7 @@ export async function POST(request: Request) {
       detail: `Creé campaña, audiencia para México, presupuesto de ${input.dailyBudget} MXN diarios y un anuncio con imagen que lleva a ${DESTINATION_LABEL[input.objective]} para ${input.offer}.`,
       impact: status === "ACTIVE" ? "Campaña en aprendizaje" : connected ? "En pausa en Meta, lista para activar" : "Lista para revisar",
       kind: "action",
-      createdAt: "Ahora",
+      createdAt: new Date().toISOString(),
     }, ...latest.activities];
     return latest;
   });

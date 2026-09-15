@@ -43,7 +43,7 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
           detail: recommendation.detail,
           impact: recommendation.impact,
           kind: recommendation.urgency === "warning" ? "warning" : recommendation.urgency === "action" ? "action" : "insight",
-          createdAt: "Ahora",
+          createdAt: now.toISOString(),
         })));
         proposals.push(...actionsFromAi(analysis.actions, organization, workspace, now));
         aiHeadline = analysis.headline;

@@ -8,10 +8,10 @@ import {
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { Ad, AgentAction, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AgentName, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
-import { accountHealth, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
+import { accountHealth, agentBriefs, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 
 type Decision = "approve" | "reject" | "resume";
@@ -91,12 +91,12 @@ const viewTitles: Record<NavView, { eyebrow: string; title: string }> = {
 };
 
 const agentMeta = {
-  Supervisor: { icon: ShieldCheck, color: "violet", description: "Coordina acciones y hace cumplir tus límites." },
-  Estratega: { icon: Target, color: "blue", description: "Diseña campañas y encuentra oportunidades." },
-  Analista: { icon: Activity, color: "cyan", description: "Interpreta rendimiento y detecta anomalías." },
-  Presupuesto: { icon: CircleDollarSign, color: "green", description: "Distribuye inversión hacia lo que funciona." },
-  Audiencias: { icon: UserRound, color: "orange", description: "Prueba segmentos y controla la fatiga." },
-  Creativos: { icon: WandSparkles, color: "pink", description: "Produce y prueba variantes de anuncios." },
+  Supervisor: { icon: ShieldCheck, color: "violet", description: "Cuida el límite mensual: frena el ritmo de gasto y pausa al llegar al tope." },
+  Estratega: { icon: Target, color: "blue", description: "Propone cambios de estrategia con IA y registra las campañas que creas." },
+  Analista: { icon: Activity, color: "cyan", description: "Pausa campañas y anuncios que gastan sin resultados." },
+  Presupuesto: { icon: CircleDollarSign, color: "green", description: "Baja presupuesto a lo que rinde bajo la meta y escala lo mejor." },
+  Audiencias: { icon: UserRound, color: "orange", description: "Vigila la frecuencia para avisar cuando tu público se satura." },
+  Creativos: { icon: WandSparkles, color: "pink", description: "Pausa anuncios fatigados, los reactiva tras descansar y crea variantes." },
 } as const;
 
 export function AppShell({ initialData, account }: { initialData: SafeWorkspace; account: { name: string; email: string } }) {
@@ -254,7 +254,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
     campaigns: <CampaignsView campaigns={campaigns} ads={ads} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
-    agents: <AgentsView organization={organization} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
+    agents: <AgentsView organization={organization} campaigns={data.campaigns} ads={data.ads} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
@@ -629,7 +629,7 @@ function AdVariantModal({ ads, onClose, onCreated }: { ads: Ad[]; onClose: () =>
 function ActivityList({ activities }: { activities: SafeWorkspace["activities"] }) {
   return <div className="activity-list">{activities.length ? activities.map((item) => {
     const meta = agentMeta[item.agent]; const Icon = meta.icon;
-    return <div className="activity-item" key={item.id}><span className={`agent-icon ${meta.color}`}><Icon size={15}/></span><div><div><b>{item.agent}</b><small>{item.createdAt}</small></div><strong>{item.title}</strong><p>{item.detail}</p><em>{item.impact}</em></div></div>;
+    return <div className="activity-item" key={item.id}><span className={`agent-icon ${meta.color}`}><Icon size={15}/></span><div><div><b>{item.agent}</b><small suppressHydrationWarning>{timeAgo(item.createdAt)}</small></div><strong>{item.title}</strong><p>{item.detail}</p><em>{item.impact}</em></div></div>;
   }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
 }
 
@@ -697,20 +697,68 @@ function CampaignReviewsPanel({ review, pages, running, onRun }: { review?: { at
   </div>;
 }
 
-function AgentsView({ organization, activities, actions, reviews, pages, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; reviews?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
+type AgentDecision = { id: string; at: string; title: string; detail: string; badge?: { label: string; badge: string }; impact?: string };
+
+/** An agent's history: its actions with their current status, plus insights that are not copies of those actions. */
+function agentDecisions(agent: AgentName, actions: AgentAction[], activities: SafeWorkspace["activities"]): AgentDecision[] {
+  const own = actions.filter((action) => action.agent === agent);
+  const reasons = new Set(own.map((action) => action.reason));
+  const time = (iso: string) => Date.parse(iso) || 0;
+  return [
+    ...own.map((action) => ({
+      id: action.id, at: action.resolvedAt ?? action.createdAt, title: capitalize(describeAction(action)),
+      detail: action.guardrail || action.error || action.reason, badge: ACTION_STATUS[action.status], impact: action.impact,
+    })),
+    ...activities.filter((item) => item.agent === agent && !reasons.has(item.detail))
+      .map((item) => ({ id: item.id, at: item.createdAt, title: item.title, detail: item.detail, impact: item.impact })),
+  ].sort((a, b) => time(b.at) - time(a.at));
+}
+
+function AgentDecisionsPanel({ agent, decisions, signal, onClose }: { agent: AgentName; decisions: AgentDecision[]; signal: string; onClose: () => void }) {
+  const meta = agentMeta[agent];
+  const Icon = meta.icon;
+  return <div className="panel agent-decisions">
+    <PanelHeader title={`Decisiones de ${agent}`} subtitle={signal} action={<button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={16}/></button>}/>
+    {decisions.length ? <div className="action-log">{decisions.slice(0, 25).map((item) => <div className="action-log-row" key={item.id}>
+      {item.badge ? <span className={`status-badge ${item.badge.badge}`}><i/>{item.badge.label}</span> : <span className={`agent-icon ${meta.color}`}><Icon size={15}/></span>}
+      <div><strong>{item.title}</strong><p>{item.detail}</p>{item.impact && <p className="decision-impact">{item.impact}</p>}</div>
+      <div className="action-log-side"><small suppressHydrationWarning>{timeAgo(item.at)}</small></div>
+    </div>)}</div> : <div className="empty-panel"><Icon size={22}/><b>{agent} aún no ha tomado decisiones</b><span>Aparecerán aquí cuando detecte algo en un análisis.</span></div>}
+  </div>;
+}
+
+function AgentsView({ organization, campaigns, ads, activities, actions, reviews, pages, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; campaigns: Campaign[]; ads: Ad[]; activities: SafeWorkspace["activities"]; actions: AgentAction[]; reviews?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
   const modeHint: Record<AutomationMode, string> = {
     observer: "Modo Observador: los agentes solo sugieren cambios.",
     copilot: "Modo Copiloto: cada cambio espera tu aprobación.",
     autonomous: "Modo Autónomo: los cambios que pasan los guardrails se aplican solos.",
     yolo: "Modo YOLO: los cambios que pasan los guardrails se aplican solos.",
   };
+  const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
+  const briefs = agentBriefs({ campaigns, ads }, organization, new Date(), Boolean(aiStatus?.configured));
+  const alerting = briefs.filter((brief) => brief.state === "alert").length;
+  const selectedBrief = briefs.find((brief) => brief.agent === selectedAgent);
   return <div className="page-stack">
     <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
     <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions} decidingId={decidingId} onDecide={onDecide}/></div>
     <CampaignReviewsPanel key={organization.id} review={reviews} pages={pages} running={running} onRun={onRun}/>
     <AiAssistantPanel organization={organization} status={aiStatus}/>
-    <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className="live-label"><i/> 6 OPERANDO</span></div>
-    <div className="agents-grid">{Object.entries(agentMeta).map(([name, meta]) => { const Icon = meta.icon; const last = actions.find((action) => action.agent === name); return <div className="agent-card" key={name}><div className="agent-card-top"><span className={`agent-big-icon ${meta.color}`}><Icon size={21}/></span><span className="agent-status"><i/> ACTIVO</span></div><h3>{name}</h3><p>{meta.description}</p><div className="agent-stat"><span>Última decisión</span><b suppressHydrationWarning>{last ? timeAgo(last.createdAt) : "Sin decisiones"}</b></div><button>Ver decisiones <ChevronRight size={14}/></button></div>; })}</div>
+    <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className={`live-label ${alerting ? "alerting" : ""}`}><i/> {alerting ? `${alerting} CON ALERTA` : "TODO AL DÍA"}</span></div>
+    <div className="agents-grid">{briefs.map((brief) => {
+      const meta = agentMeta[brief.agent];
+      const Icon = meta.icon;
+      const decisions = agentDecisions(brief.agent, actions, activities);
+      const open = selectedAgent === brief.agent;
+      return <div className={`agent-card ${open ? "open" : ""}`} key={brief.agent}>
+        <div className="agent-card-top"><span className={`agent-big-icon ${meta.color}`}><Icon size={21}/></span><span className={`agent-status ${brief.state}`}><i/> {brief.status.toUpperCase()}</span></div>
+        <h3>{brief.agent}</h3>
+        <p>{meta.description}</p>
+        <div className="agent-signal">{brief.signal}</div>
+        <div className="agent-stat"><span>Última decisión</span><b suppressHydrationWarning>{decisions[0] ? timeAgo(decisions[0].at) : "Sin decisiones"}</b></div>
+        <button aria-expanded={open} onClick={() => setSelectedAgent(open ? null : brief.agent)}>{open ? "Ocultar decisiones" : `Ver decisiones (${decisions.length})`} <ChevronRight size={14}/></button>
+      </div>;
+    })}</div>
+    {selectedBrief && <AgentDecisionsPanel agent={selectedBrief.agent} signal={selectedBrief.signal} decisions={agentDecisions(selectedBrief.agent, actions, activities)} onClose={() => setSelectedAgent(null)}/>}
     <div className="agents-lower"><div className="panel"><PanelHeader title="Cómo decide Pulso" subtitle="Proceso de una optimización autónoma"/><div className="decision-flow"><div><span>01</span><b>Observa</b><p>Recopila gasto, resultados y señales de fatiga.</p></div><ChevronRight size={17}/><div><span>02</span><b>Contrasta</b><p>Compara con objetivos y límites configurados.</p></div><ChevronRight size={17}/><div><span>03</span><b>Decide</b><p>El Supervisor valida impacto y riesgo.</p></div><ChevronRight size={17}/><div><span>04</span><b>Actúa</b><p>Ejecuta, registra y vuelve a medir.</p></div></div></div><div className="panel activity-panel expanded"><PanelHeader title="Decisiones recientes" subtitle="Registro explicable"/><ActivityList activities={activities.slice(0, 5)}/></div></div>
   </div>;
 }
@@ -784,7 +832,7 @@ function CreativesView({ creatives, onCreate }: { creatives: SafeWorkspace["crea
 }
 
 function AlertsView({ alerts, onRead }: { alerts: SafeWorkspace["alerts"]; onRead: (id: string) => void }) {
-  return <div className="page-stack"><div className="page-intro"><div><h2>Centro de alertas</h2><p>Solo lo importante: anomalías, límites y oportunidades.</p></div><span className="count-pill">{alerts.filter((alert) => !alert.read).length} sin leer</span></div><div className="panel alerts-panel">{alerts.map((alert) => <button key={alert.id} className={`alert-row ${alert.read ? "read" : ""}`} onClick={() => onRead(alert.id)}><span className={`alert-severity ${alert.severity}`}>{alert.severity === "success" ? <Check size={18}/> : alert.severity === "info" ? <Lightbulb size={18}/> : <AlertCircle size={18}/>}</span><div><div><h3>{alert.title}</h3><small>{alert.createdAt}</small></div><p>{alert.detail}</p></div>{!alert.read && <i className="unread-dot"/>}<ChevronRight size={17}/></button>)}</div></div>;
+  return <div className="page-stack"><div className="page-intro"><div><h2>Centro de alertas</h2><p>Solo lo importante: anomalías, límites y oportunidades.</p></div><span className="count-pill">{alerts.filter((alert) => !alert.read).length} sin leer</span></div><div className="panel alerts-panel">{alerts.map((alert) => <button key={alert.id} className={`alert-row ${alert.read ? "read" : ""}`} onClick={() => onRead(alert.id)}><span className={`alert-severity ${alert.severity}`}>{alert.severity === "success" ? <Check size={18}/> : alert.severity === "info" ? <Lightbulb size={18}/> : <AlertCircle size={18}/>}</span><div><div><h3>{alert.title}</h3><small suppressHydrationWarning>{timeAgo(alert.createdAt)}</small></div><p>{alert.detail}</p></div>{!alert.read && <i className="unread-dot"/>}<ChevronRight size={17}/></button>)}</div></div>;
 }
 
 function ConnectionsView({ data, syncing, onSync, setToast }: { data: SafeWorkspace; syncing: boolean; onSync: () => void; setToast: (message: string) => void }) {
