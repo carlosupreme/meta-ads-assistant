@@ -846,7 +846,7 @@ export function reviewCampaigns(
       const verdict: CampaignVerdict = action.status === "blocked" ? "watch"
         : action.type === "increase_budget" || action.type === "resume_campaign" ? "excellent"
           : "attention";
-      return review(verdict, `${ACTION_STATE[action.status]}: ${describeAction(action)}`, `${action.reason}${action.guardrail ? ` ${action.guardrail}` : ""}${fatigueNote}`);
+      return { ...review(verdict, `${ACTION_STATE[action.status]}: ${describeAction(action)}`, `${action.reason}${action.guardrail ? ` ${action.guardrail}` : ""}${fatigueNote}`), actionId: action.id };
     }
     if (campaign.status === "PAUSED") {
       const pause = latestStatus.get(`campaign:${campaign.id}`);
@@ -872,6 +872,25 @@ export function reviewCampaigns(
 
   void now;
   return reviews.sort((a, b) => VERDICT_ORDER.indexOf(a.verdict) - VERDICT_ORDER.indexOf(b.verdict) || b.spend - a.spend);
+}
+
+/**
+ * The agents' latest action on a campaign that a new proposal would repeat or contradict: still open, or
+ * logged in the last 24 hours. Changes made by the user are not counted.
+ */
+export function openCampaignAction(actions: AgentAction[], campaignId: string, now: Date): AgentAction | undefined {
+  const dayAgo = now.getTime() - DAY_MS;
+  return actions.find((action) => action.campaignId === campaignId && action.source !== "user"
+    && (action.status === "pending" || action.status === "executing" || Date.parse(action.resolvedAt ?? action.createdAt) >= dayAgo));
+}
+
+/** Replaces one campaign's entry in its business's stored review, keeping the other campaigns. */
+export function storeCampaignReview(current: WorkspaceData, organizationId: string, item: CampaignReview, now: Date): WorkspaceData {
+  const stored = current.campaignReviews?.[organizationId];
+  const items = stored?.items.some((entry) => entry.campaignId === item.campaignId)
+    ? stored.items.map((entry) => entry.campaignId === item.campaignId ? item : entry)
+    : [...(stored?.items ?? []), item];
+  return { ...current, campaignReviews: { ...current.campaignReviews, [organizationId]: { at: stored?.at ?? now.toISOString(), items } } };
 }
 
 export interface MonitoringSummary {

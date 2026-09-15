@@ -201,6 +201,8 @@ Cada análisis (manual o del monitor) deja en **Agentes IA → Revisión por cam
 | En meta / Excelente | En meta, o 20% por encima y candidata a escalar |
 | Pausada / Borrador | Sin evaluación mientras no entregue; indica si la pausó Pulso y cuándo se reactivaría |
 
+En **Agentes IA**, **Analizar campaña por campaña** primero revisa la cuenta completa (límite, ritmo y reglas) y después, con OpenAI configurado, analiza **cada campaña por separado** (`POST /api/agents/review`, una petición por campaña para no chocar con el tiempo máximo de Vercel). Cada tarjeta muestra el avance en vivo y se reemplaza con el veredicto y resumen de la IA (etiqueta **IA**) y, si los datos lo justifican, una acción que pasa por los mismos guardrails y respeta el modo: en Copiloto se aprueba o rechaza desde la misma tarjeta. Si la campaña ya tiene una acción de los agentes abierta o de las últimas 24 h, la IA no propone otra. Se puede detener a la mitad; los borradores y campañas sin gasto conservan la revisión por reglas.
+
 Cada mensaje incluye la métrica contra la meta, anuncios con frecuencia alta y, si hubo, la acción de ese análisis con su estado. Se guarda solo la revisión más reciente por negocio, así los ciclos horarios no llenan el registro de actividad.
 
 ## Trabajo visible

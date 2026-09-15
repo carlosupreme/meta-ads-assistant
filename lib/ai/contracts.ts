@@ -1,4 +1,4 @@
-import type { Ad, AgentAction, AgentActionType, AgentName, Campaign, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AgentActionType, AgentName, Campaign, CampaignVerdict, Organization } from "@/lib/types";
 
 /** Whether OpenAI can be used for this workspace, and why not. */
 export interface AiStatus {
@@ -32,6 +32,23 @@ export interface AiActionProposal {
   changePct?: number;
   reason: string;
   impact: string;
+}
+
+/** Everything the model needs to judge one campaign against its account. */
+export interface AiSingleCampaignContext {
+  organization: AiCampaignContext["organization"];
+  campaign: AiCampaignContext["campaigns"][number] & { pageNames?: string[] };
+  ads: AiCampaignContext["ads"];
+  account: { activeCampaigns: number; averageRoas: number; averageCostPerResult: number; projectedMonthSpend: number };
+  /** Agent actions on this campaign that are still open or from the last 24 h; the model must not add another. */
+  recentActions: Array<Pick<AgentAction, "type" | "status" | "fromBudget" | "toBudget" | "reason">>;
+}
+
+export interface AiCampaignReview {
+  verdict: Exclude<CampaignVerdict, "draft">;
+  title: string;
+  summary: string;
+  action: (Omit<AiActionProposal, "campaignId" | "adId" | "changePct"> & { adId?: string | null; changePct?: number | null }) | null;
 }
 
 export interface AiAnalysis {

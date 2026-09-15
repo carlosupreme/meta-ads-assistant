@@ -229,6 +229,10 @@ export interface CampaignReview {
   roas: number;
   costPerResult: number;
   dailyBudget: number;
+  /** Action taken or proposed for this campaign by the latest analysis. */
+  actionId?: string;
+  /** "ai" once the campaign was analyzed on its own by the model; otherwise the rules wrote the message. */
+  source?: "rules" | "ai";
 }
 
 export interface MetricPoint {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   actionsFromAi, buildVariantSpec, checkGuardrails, commitAgentRun, creativeRefreshTargets, lastStatusChanges, monitoringSummary, planRuleActions,
-  projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns, agentBriefs,
+  projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns, agentBriefs, openCampaignAction, storeCampaignReview,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -336,6 +336,33 @@ describe("campaign reviews", () => {
     const next = commitAgentRun(workspace(), { actions: [], insights: [], reviews: [{ organizationId: "org", items }] }, now);
     assert.equal(next.campaignReviews?.org.items.length, 1);
     assert.equal(next.campaignReviews?.org.at, now.toISOString());
+  });
+});
+
+describe("one-by-one campaign analysis", () => {
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
+
+  it("finds the agents' open or recent action so the AI does not add another", () => {
+    const actions = [
+      budgetAction({ id: "user", source: "user", status: "executed", createdAt: hoursAgo(1) }),
+      budgetAction({ id: "old", status: "executed", createdAt: hoursAgo(30) }),
+    ];
+    assert.equal(openCampaignAction(actions, "c1", now), undefined);
+    assert.equal(openCampaignAction([budgetAction({ id: "pending", status: "pending", createdAt: hoursAgo(40) }), ...actions], "c1", now)?.id, "pending");
+    assert.equal(openCampaignAction([budgetAction({ id: "fresh", status: "blocked", createdAt: hoursAgo(2) })], "c1", now)?.id, "fresh");
+  });
+
+  it("replaces only the analyzed campaign in the stored review", () => {
+    const campaigns = [campaign({ id: "c1" }), campaign({ id: "c2" })];
+    const items = reviewCampaigns(workspace({ campaigns }), organization(), [], now);
+    const stored = { ...workspace({ campaigns }), campaignReviews: { org: { at: hoursAgo(1), items } } };
+    const target = items.find((item) => item.campaignId === "c2")!;
+    const next = storeCampaignReview(stored, "org", { ...target, title: "Revisada con IA", source: "ai" }, now);
+    const review = next.campaignReviews?.org;
+    assert.equal(review?.items.length, 2);
+    assert.equal(review?.at, hoursAgo(1));
+    assert.equal(review?.items.find((item) => item.campaignId === "c2")?.source, "ai");
+    assert.equal(review?.items.find((item) => item.campaignId === "c1")?.source, undefined);
   });
 });
 

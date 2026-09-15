@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Activity, AlertCircle, ArrowDownRight, ArrowUpRight, Bell, Bot, BrainCircuit,
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
@@ -121,6 +121,9 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const pendingCount = actions.filter((item) => item.status === "pending").length;
   const metrics = data.metrics[organization?.id] || [];
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [reviewProgress, setReviewProgress] = useState<ReviewProgress | null>(null);
+  const [reviewFailures, setReviewFailures] = useState<string[]>([]);
+  const stopReviews = useRef(false);
 
   useEffect(() => {
     const status = new URLSearchParams(window.location.search).get("connection");
@@ -169,6 +172,57 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     } catch (error) {
       setToast(error instanceof Error ? error.message : "No se pudo ejecutar el análisis");
     } finally { setRunning(false); }
+  }
+
+  /** Account run first (limits, pacing, rules), then every campaign analyzed on its own by the AI, one request each. */
+  async function analyzeEachCampaign() {
+    const organizationIdAtStart = organization.id;
+    setRunning(true);
+    setReviewFailures([]);
+    stopReviews.current = false;
+    try {
+      const response = await fetch("/api/agents/run", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: organizationIdAtStart }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      const workspaceResponse = await fetch("/api/workspace", { cache: "no-store" });
+      if (!workspaceResponse.ok) throw new Error("No se pudo leer el resultado del análisis");
+      const latest: SafeWorkspace = await workspaceResponse.json();
+      setData(latest);
+      const items = latest.campaignReviews?.[organizationIdAtStart]?.items ?? [];
+      if (!aiStatus?.configured || !items.length) {
+        setToast(result.summary);
+        return;
+      }
+
+      const failures: string[] = [];
+      let analyzed = 0;
+      for (const [index, item] of items.entries()) {
+        if (stopReviews.current) break;
+        setReviewProgress({ done: index, total: items.length, campaignId: item.campaignId });
+        try {
+          const reviewResponse = await fetch("/api/agents/review", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ organizationId: organizationIdAtStart, campaignId: item.campaignId }),
+          });
+          const reviewResult = await reviewResponse.json().catch(() => ({}));
+          if (!reviewResponse.ok) throw new Error(reviewResult.error);
+          setData(reviewResult.workspace);
+          analyzed += 1;
+        } catch {
+          failures.push(item.campaignId);
+          setReviewFailures([...failures]);
+        }
+      }
+      const outcome = `${analyzed} de ${items.length} ${items.length === 1 ? "campaña analizada" : "campañas analizadas"} una por una`;
+      setToast(stopReviews.current ? `Detuviste el análisis: ${outcome}.` : `${outcome}${failures.length ? `; ${failures.length} sin respuesta de la IA` : ""}.`);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "No se pudo ejecutar el análisis");
+    } finally {
+      setReviewProgress(null);
+      setRunning(false);
+    }
   }
 
   async function syncMeta() {
@@ -254,7 +308,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
     campaigns: <CampaignsView campaigns={campaigns} ads={ads} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
-    agents: <AgentsView organization={organization} campaigns={data.campaigns} ads={data.ads} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
+    agents: <AgentsView organization={organization} campaigns={data.campaigns} ads={data.ads} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={analyzeEachCampaign} progress={reviewProgress} failures={reviewFailures} onStop={() => { stopReviews.current = true; }} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
@@ -664,7 +718,20 @@ const VERDICTS: Record<CampaignVerdict, { label: string; tone: string }> = {
   draft: { label: "Borrador", tone: "muted" },
 };
 
-function CampaignReviewsPanel({ review, pages, running, onRun }: { review?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; running: boolean; onRun: () => void }) {
+type ReviewProgress = { done: number; total: number; campaignId: string };
+
+function CampaignReviewsPanel({ review, pages, actions, running, progress, failures, decidingId, onDecide, onRun, onStop }: {
+  review?: { at: string; items: CampaignReview[] };
+  pages: ManagedPage[];
+  actions: AgentAction[];
+  running: boolean;
+  progress: ReviewProgress | null;
+  failures: string[];
+  decidingId: string | null;
+  onDecide: (id: string, decision: Decision) => void;
+  onRun: () => void;
+  onStop: () => void;
+}) {
   const [verdictFilter, setVerdictFilter] = useState<"all" | CampaignVerdict>("all");
   if (!review) {
     return <div className="panel reviews-panel">
@@ -675,25 +742,45 @@ function CampaignReviewsPanel({ review, pages, running, onRun }: { review?: { at
   const pageNames = new Map(pages.map((page) => [page.id, page.name]));
   const counts = review.items.reduce<Partial<Record<CampaignVerdict, number>>>((all, item) => ({ ...all, [item.verdict]: (all[item.verdict] ?? 0) + 1 }), {});
   const items = verdictFilter === "all" ? review.items : review.items.filter((item) => item.verdict === verdictFilter);
+  const analyzedByAi = review.items.filter((item) => item.source === "ai").length;
+  const current = progress && review.items.find((item) => item.campaignId === progress.campaignId);
   return <div className="panel reviews-panel">
     <PanelHeader
       title="Revisión por campaña"
-      subtitle={`Último análisis ${timeAgo(review.at).toLowerCase()} · ${review.items.length} ${review.items.length === 1 ? "campaña" : "campañas"}`}
-      action={<select className="page-filter" aria-label="Filtrar por veredicto" value={verdictFilter} onChange={(event) => setVerdictFilter(event.target.value as "all" | CampaignVerdict)}>
+      subtitle={progress
+        ? `Analizando ${progress.done + 1} de ${progress.total}${current ? `: ${current.campaignName}` : ""}`
+        : `Último análisis ${timeAgo(review.at).toLowerCase()} · ${review.items.length} ${review.items.length === 1 ? "campaña" : "campañas"}${analyzedByAi ? ` · ${analyzedByAi} con IA` : ""}`}
+      action={progress ? <button className="secondary-button" onClick={onStop}><X size={14}/> Detener</button> : <select className="page-filter" aria-label="Filtrar por veredicto" value={verdictFilter} onChange={(event) => setVerdictFilter(event.target.value as "all" | CampaignVerdict)}>
         <option value="all">Todas ({review.items.length})</option>
         {(Object.keys(VERDICTS) as CampaignVerdict[]).filter((verdict) => counts[verdict]).map((verdict) => <option key={verdict} value={verdict}>{VERDICTS[verdict].label} ({counts[verdict]})</option>)}
       </select>}
     />
-    <div className="review-list">{items.map((item) => <div className="review-row" key={item.campaignId}>
-      <span className={`verdict-badge ${VERDICTS[item.verdict].tone}`}>{VERDICTS[item.verdict].label}</span>
-      <div>
-        <strong>{item.campaignName}</strong>
-        {(item.pageIds?.length ?? 0) > 0 && <small>{item.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ")}</small>}
-        <b className="review-title">{item.title}</b>
-        <p>{item.detail}</p>
-      </div>
-      <div className="review-metrics"><span>{money(item.spend)}</span><small>{item.results} resultados · {item.roas.toFixed(2)}×</small><small>{money(item.dailyBudget)}/día</small></div>
-    </div>)}</div>
+    {progress && <div className="review-progress"><i style={{ width: `${(progress.done / progress.total) * 100}%` }}/></div>}
+    <div className="review-list">{items.map((item) => {
+      const analyzing = progress?.campaignId === item.campaignId;
+      const action = item.actionId ? actions.find((entry) => entry.id === item.actionId) : undefined;
+      return <div className={`review-row ${analyzing ? "analyzing" : ""}`} key={item.campaignId}>
+        {analyzing
+          ? <span className="verdict-badge info"><LoaderCircle className="spin" size={11}/> Analizando</span>
+          : <span className={`verdict-badge ${VERDICTS[item.verdict].tone}`}>{VERDICTS[item.verdict].label}</span>}
+        <div>
+          <strong>{item.campaignName}{item.source === "ai" && <em className="ai-tag">IA</em>}</strong>
+          {(item.pageIds?.length ?? 0) > 0 && <small>{item.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ")}</small>}
+          <b className="review-title">{item.title}</b>
+          <p>{item.detail}</p>
+          {failures.includes(item.campaignId) && <p className="guardrail-note">La IA no respondió para esta campaña; se muestra la revisión por reglas.</p>}
+          {action && <div className="review-action">
+            <span className={`status-badge ${ACTION_STATUS[action.status].badge}`}><i/>{ACTION_STATUS[action.status].label}</span>
+            <span>{capitalize(describeAction(action))}{action.guardrail || action.error ? ` · ${action.guardrail || action.error}` : ""}</span>
+            {action.status === "pending" && <span className="review-action-buttons">
+              <button className="secondary-button" disabled={Boolean(decidingId)} onClick={() => onDecide(action.id, "reject")}><X size={13}/> Rechazar</button>
+              <button className="primary-button" disabled={Boolean(decidingId)} onClick={() => onDecide(action.id, "approve")}>{decidingId === action.id ? <LoaderCircle className="spin" size={13}/> : <Check size={13}/>} Aprobar</button>
+            </span>}
+          </div>}
+        </div>
+        <div className="review-metrics"><span>{money(item.spend)}</span><small>{item.results} resultados · {item.roas.toFixed(2)}×</small><small>{money(item.dailyBudget)}/día</small></div>
+      </div>;
+    })}</div>
   </div>;
 }
 
@@ -727,7 +814,7 @@ function AgentDecisionsPanel({ agent, decisions, signal, onClose }: { agent: Age
   </div>;
 }
 
-function AgentsView({ organization, campaigns, ads, activities, actions, reviews, pages, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; campaigns: Campaign[]; ads: Ad[]; activities: SafeWorkspace["activities"]; actions: AgentAction[]; reviews?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
+function AgentsView({ organization, campaigns, ads, activities, actions, reviews, pages, decidingId, onDecide, running, onRun, progress, failures, onStop, onMode, aiStatus }: { organization: Organization; campaigns: Campaign[]; ads: Ad[]; progress: ReviewProgress | null; failures: string[]; onStop: () => void; activities: SafeWorkspace["activities"]; actions: AgentAction[]; reviews?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
   const modeHint: Record<AutomationMode, string> = {
     observer: "Modo Observador: los agentes solo sugieren cambios.",
     copilot: "Modo Copiloto: cada cambio espera tu aprobación.",
@@ -739,9 +826,9 @@ function AgentsView({ organization, campaigns, ads, activities, actions, reviews
   const alerting = briefs.filter((brief) => brief.state === "alert").length;
   const selectedBrief = briefs.find((brief) => brief.agent === selectedAgent);
   return <div className="page-stack">
-    <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
+    <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} {progress ? `Analizando ${progress.done + 1}/${progress.total}` : running ? "Revisando la cuenta" : "Analizar campaña por campaña"}</button></div></div>
     <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions} decidingId={decidingId} onDecide={onDecide}/></div>
-    <CampaignReviewsPanel key={organization.id} review={reviews} pages={pages} running={running} onRun={onRun}/>
+    <CampaignReviewsPanel key={organization.id} review={reviews} pages={pages} actions={actions} running={running} progress={progress} failures={failures} decidingId={decidingId} onDecide={onDecide} onRun={onRun} onStop={onStop}/>
     <AiAssistantPanel organization={organization} status={aiStatus}/>
     <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className={`live-label ${alerting ? "alerting" : ""}`}><i/> {alerting ? `${alerting} CON ALERTA` : "TODO AL DÍA"}</span></div>
     <div className="agents-grid">{briefs.map((brief) => {

@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import type { AiAnalysis, AiCampaignContext, AiStatus } from "./contracts";
+import type { AiAnalysis, AiCampaignContext, AiCampaignReview, AiSingleCampaignContext, AiStatus } from "./contracts";
 
 const MODELS_TTL_MS = 10 * 60_000;
 
@@ -133,6 +133,58 @@ export async function analyzeCampaigns(model: string, context: AiCampaignContext
     input: compactContext(context),
   });
   return analysisSchema.parse(readJsonOutput(response));
+}
+
+const CAMPAIGN_REVIEWER_INSTRUCTIONS = [
+  "Eres el analista senior de Pulso, un SaaS de Meta Ads para dueños de negocio mexicanos. Revisa UNA sola campaña con los datos proporcionados; no inventes métricas, políticas de Meta ni resultados.",
+  "Siempre entrega un veredicto y un resumen de 2 a 4 frases en español de México: cómo va frente a la meta y al promedio de la cuenta, qué señal de sus anuncios importa y qué conviene hacer, aunque vaya bien.",
+  "verdict: attention (bajo la meta o gasta sin resultados), watch (ligeramente bajo o con señales de riesgo), learning (gastó menos de dos días de presupuesto), no_data (sin gasto), good (en meta), excellent (claramente sobre la meta), paused (pausada).",
+  "action es null salvo que los datos justifiquen un cambio concreto y la campaña esté ACTIVE. Tipos: increase_budget (changePct de 1 a 20) o decrease_budget (changePct de -20 a -1); pause_campaign; pause_ad con adId de anuncios. Si acciones_recientes no está vacío, action es null.",
+  "Un motor de guardrails validará la acción: nunca exceder el límite mensual, variación máxima de 20% en 24 h y no pausar el último anuncio activo de un conjunto.",
+  "Devuelve JSON estricto sin Markdown: {verdict,title,summary,action:{type,adId?,changePct?,reason,impact}|null}. title de máximo 90 caracteres.",
+].join(" ");
+
+const campaignReviewSchema = z.object({
+  verdict: z.enum(["attention", "watch", "learning", "no_data", "good", "excellent", "paused"]),
+  title: z.string().trim().min(3).max(120),
+  summary: z.string().trim().min(12).max(700),
+  action: z.object({
+    type: z.enum(["increase_budget", "decrease_budget", "pause_campaign", "pause_ad"]),
+    adId: z.string().min(1).nullish(),
+    changePct: z.number().min(-20).max(20).nullish(),
+    reason: z.string().min(8).max(420),
+    impact: z.string().min(2).max(120),
+  }).nullable().default(null),
+});
+
+const MAX_ADS_PER_CAMPAIGN = 30;
+
+/** A verdict and summary for one campaign, plus at most one change that the guardrails still validate. */
+export async function reviewCampaignWithAi(model: string, context: AiSingleCampaignContext): Promise<AiCampaignReview> {
+  const { organization, campaign, account } = context;
+  const response = await openai().responses.create({
+    model,
+    store: false,
+    reasoning: REASONING,
+    text: { verbosity: "low" },
+    max_output_tokens: 4000,
+    instructions: CAMPAIGN_REVIEWER_INSTRUCTIONS,
+    input: JSON.stringify({
+      negocio: organization.name,
+      objetivo: organization.objective,
+      modo: organization.mode,
+      limite_mensual_mxn: organization.monthlyLimit,
+      gasto_mes_mxn: organization.spentThisMonth,
+      proyeccion_mes_mxn: account.projectedMonthSpend,
+      roas_meta: organization.targetRoas ?? 3,
+      valor_estimado_resultado_mxn: organization.resultValue,
+      promedio_cuenta: { campanas_activas: account.activeCampaigns, roas: account.averageRoas, costo_resultado_mxn: account.averageCostPerResult },
+      campana: { id: campaign.id, nombre: campaign.name, paginas: campaign.pageNames ?? [], estado: campaign.status, objetivo: campaign.objective, gasto_mes_mxn: campaign.spend, resultados: campaign.results, costo_resultado_mxn: campaign.costPerResult, ingresos_mxn: campaign.revenue, roas: campaign.roas, tendencia_pct: campaign.trend, presupuesto_diario_mxn: campaign.dailyBudget, nivel_presupuesto: campaign.budgetLevel ?? "campaign" },
+      anuncios: [...context.ads].sort((a, b) => b.spend - a.spend).slice(0, MAX_ADS_PER_CAMPAIGN).map((ad) => ({ id: ad.id, nombre: ad.name, estado: ad.status, gasto_mxn: ad.spend, impresiones: ad.impressions, ctr_pct: ad.ctr, frecuencia: ad.frequency, resultados: ad.results })),
+      acciones_recientes: context.recentActions,
+    }),
+  });
+  return campaignReviewSchema.parse(readJsonOutput(response));
 }
 
 export async function askPulso(model: string, context: AiCampaignContext, question: string): Promise<string> {
