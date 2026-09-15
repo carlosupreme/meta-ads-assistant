@@ -168,7 +168,7 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - El título (hasta 60 caracteres) y el texto principal se prellenan según el objetivo y se pueden editar.
 - Todo se crea en pausa; **Publicar al terminar** lo activa. Sin publicar, la campaña queda en Meta en pausa, lista para activarse.
 - El presupuesto queda en el conjunto y se registra así, para que los agentes lo administren desde el primer ciclo.
-- Si Meta rechaza un paso, lo que ya aceptó permanece en pausa para evitar gasto accidental.
+- Si Meta rechaza el conjunto, el creativo o el anuncio, Pulso borra la campaña vacía que alcanzó a crear y muestra la explicación de Meta (por ejemplo, que la Página no tiene WhatsApp Business vinculado). Si solo falla la activación, todo queda en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
 ## Trabajo visible

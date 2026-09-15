@@ -15,13 +15,32 @@ function appSecretProof(token: string): string | undefined {
     : undefined;
 }
 
+interface GraphError {
+  message?: string;
+  error_subcode?: number;
+  error_user_title?: string;
+  error_user_msg?: string;
+}
+
+// Meta errors worth explaining in Spanish, by error_subcode.
+const GRAPH_ERROR_MESSAGES: Record<number, string> = {
+  2446886: "Tu Página no tiene una cuenta de WhatsApp Business vinculada. Vincúlala en Meta Business Suite (Configuración → WhatsApp) o elige Messenger.",
+};
+
+/** "Invalid parameter" alone does not say what to fix; prefer Meta's user-facing explanation. */
+function graphErrorMessage(error: GraphError | undefined): string {
+  if (error?.error_subcode && GRAPH_ERROR_MESSAGES[error.error_subcode]) return GRAPH_ERROR_MESSAGES[error.error_subcode];
+  if (error?.error_user_msg) return error.error_user_title ? `${error.error_user_title}: ${error.error_user_msg}` : error.error_user_msg;
+  return error?.message || "Meta devolvió un error";
+}
+
 async function graphFetch<T>(url: URL, token: string): Promise<T> {
   url.searchParams.set("access_token", token);
   const proof = appSecretProof(token);
   if (proof) url.searchParams.set("appsecret_proof", proof);
   const response = await fetch(url, { cache: "no-store" });
-  const body = (await response.json()) as T & { error?: { message: string } };
-  if (!response.ok || body.error) throw new Error(body.error?.message || "Meta devolvió un error");
+  const body = (await response.json()) as T & { error?: GraphError };
+  if (!response.ok || body.error) throw new Error(graphErrorMessage(body.error));
   return body;
 }
 
@@ -49,9 +68,19 @@ async function graphPost<T>(path: string, token: string, params: Record<string, 
   const proof = appSecretProof(token);
   if (proof) body.set("appsecret_proof", proof);
   const response = await fetch(`${graphBase}/${path.replace(/^\//, "")}`, { method: "POST", body });
-  const result = (await response.json()) as T & { error?: { message: string } };
-  if (!response.ok || result.error) throw new Error(result.error?.message || "Meta devolvió un error");
+  const result = (await response.json()) as T & { error?: GraphError };
+  if (!response.ok || result.error) throw new Error(graphErrorMessage(result.error));
   return result;
+}
+
+async function graphDelete(path: string, token: string): Promise<void> {
+  const url = new URL(`${graphBase}/${path.replace(/^\//, "")}`);
+  url.searchParams.set("access_token", token);
+  const proof = appSecretProof(token);
+  if (proof) url.searchParams.set("appsecret_proof", proof);
+  const response = await fetch(url, { method: "DELETE" });
+  const result = (await response.json().catch(() => ({}))) as { error?: GraphError };
+  if (!response.ok || result.error) throw new Error(graphErrorMessage(result.error));
 }
 
 function actionValue(actions: ActionStats | undefined, keys: string[]): number {
@@ -440,7 +469,8 @@ async function uploadAdImage(adAccountId: string, token: string, base64: string)
 
 /**
  * Creates campaign, ad set, image creative and ad, all paused, then activates them when `publish` is set.
- * If Meta rejects a later step, the objects it already accepted stay paused so nothing spends by accident.
+ * If Meta rejects the ad set, creative or ad, the paused campaign is deleted so no empty campaign is left behind.
+ * If only activation fails, everything stays paused so nothing spends by accident.
  */
 export async function createMetaCampaign(
   encryptedToken: string,
@@ -461,36 +491,45 @@ export async function createMetaCampaign(
     is_adset_budget_sharing_enabled: "false",
     status: "PAUSED",
   });
-  const adSet = await graphPost<{ id: string }>(`${organization.adAccountId}/adsets`, token, {
-    name: AD_SET_NAME,
-    campaign_id: campaign.id,
-    daily_budget: Math.round(input.dailyBudget * 100),
-    billing_event: "IMPRESSIONS",
-    bid_strategy: "LOWEST_COST_WITHOUT_CAP",
-    targeting: JSON.stringify({ geo_locations: { countries: ["MX"] }, age_min: 18, age_max: 65 }),
-    status: "PAUSED",
-    ...setup.adSet,
-  });
-  const creative = await graphPost<{ id: string }>(`${organization.adAccountId}/adcreatives`, token, {
-    name: `Pulso · Creative · ${input.offer}`,
-    ...(organization.instagramAccountId ? { instagram_user_id: organization.instagramAccountId } : {}),
-    object_story_spec: JSON.stringify({
-      page_id: organization.pageId,
-      link_data: {
-        image_hash: imageHash,
-        link: setup.link,
-        message: input.primaryText,
-        name: input.headline,
-        call_to_action: setup.callToAction,
-      },
-    }),
-  });
-  const ad = await graphPost<{ id: string }>(`${organization.adAccountId}/ads`, token, {
-    name: `Pulso · ${input.offer} · Variante 1`,
-    adset_id: adSet.id,
-    creative: JSON.stringify({ creative_id: creative.id }),
-    status: "PAUSED",
-  });
+  let adSet: { id: string };
+  let ad: { id: string };
+  try {
+    adSet = await graphPost<{ id: string }>(`${organization.adAccountId}/adsets`, token, {
+      name: AD_SET_NAME,
+      campaign_id: campaign.id,
+      daily_budget: Math.round(input.dailyBudget * 100),
+      billing_event: "IMPRESSIONS",
+      bid_strategy: "LOWEST_COST_WITHOUT_CAP",
+      // Meta requires an explicit Advantage+ audience choice when creating ad sets.
+      targeting: JSON.stringify({ geo_locations: { countries: ["MX"] }, age_min: 18, age_max: 65, targeting_automation: { advantage_audience: 1 } }),
+      status: "PAUSED",
+      ...setup.adSet,
+    });
+    const creative = await graphPost<{ id: string }>(`${organization.adAccountId}/adcreatives`, token, {
+      name: `Pulso · Creative · ${input.offer}`,
+      ...(organization.instagramAccountId ? { instagram_user_id: organization.instagramAccountId } : {}),
+      object_story_spec: JSON.stringify({
+        page_id: organization.pageId,
+        link_data: {
+          image_hash: imageHash,
+          link: setup.link,
+          message: input.primaryText,
+          name: input.headline,
+          call_to_action: setup.callToAction,
+        },
+      }),
+    });
+    ad = await graphPost<{ id: string }>(`${organization.adAccountId}/ads`, token, {
+      name: `Pulso · ${input.offer} · Variante 1`,
+      adset_id: adSet.id,
+      creative: JSON.stringify({ creative_id: creative.id }),
+      status: "PAUSED",
+    });
+  } catch (error) {
+    // Nothing under this paused campaign can spend yet: remove it so a rejected attempt leaves no empty campaign.
+    await graphDelete(campaign.id, token).catch((cleanupError) => console.error("Could not remove partial campaign", cleanupError));
+    throw error;
+  }
   if (input.publish) {
     await graphPost(campaign.id, token, { status: "ACTIVE" });
     await graphPost(adSet.id, token, { status: "ACTIVE" });
