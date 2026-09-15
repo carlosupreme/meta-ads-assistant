@@ -3,8 +3,38 @@ import { describe, it } from "node:test";
 import { demoData } from "../lib/demo-data.ts";
 import type { Campaign, ManagedPage, Organization, WorkspaceData } from "../lib/types.ts";
 import {
-  applyMetaConnection, campaignPageIds, defaultPageFor, mergePages, mergeSyncedWorkspace, pageIdFromCreative, parseAvailableBalance,
+  applyMetaConnection, campaignPageIds, campaignsForPage, defaultPageFor, mergePages, mergeSyncedWorkspace, pageIdFromCreative, pageOptions,
+  parseAvailableBalance, sumMetrics,
 } from "../lib/workspace.ts";
+
+describe("page scope", () => {
+  const pages: ManagedPage[] = [
+    { id: "p1", name: "Villa 7", source: "business" },
+    { id: "p2", name: "Magaña Sports", source: "business" },
+    { id: "p3", name: "Sin campañas", source: "profile" },
+  ];
+  const campaigns = [{ id: "a", pageIds: ["p1"] }, { id: "b", pageIds: ["p1", "p2"] }, { id: "c", pageIds: [] }, { id: "d" }];
+
+  it("filters campaigns by Page, by missing Page or not at all", () => {
+    assert.deepEqual(campaignsForPage(campaigns, "p1").map((item) => item.id), ["a", "b"]);
+    assert.deepEqual(campaignsForPage(campaigns, "none").map((item) => item.id), ["c", "d"]);
+    assert.equal(campaignsForPage(campaigns, "all").length, 4);
+  });
+
+  it("lists only Pages with campaigns, busiest first", () => {
+    const options = pageOptions(campaigns, pages);
+    assert.deepEqual(options.pages.map((page) => [page.id, page.campaigns]), [["p1", 2], ["p2", 1]]);
+    assert.equal(options.withoutPage, 2);
+  });
+
+  it("adds the daily series of a Page's campaigns in day order", () => {
+    const series = sumMetrics({
+      a: [{ day: "2026-09-02", date: "02 sept", spend: 100, revenue: 300, roas: 3 }],
+      b: [{ day: "2026-09-01", date: "01 sept", spend: 50, revenue: 0, roas: 0 }, { day: "2026-09-02", date: "02 sept", spend: 100, revenue: 100, roas: 1 }],
+    }, ["a", "b", "b"]);
+    assert.deepEqual(series.map((point) => [point.day, point.spend, point.revenue, point.roas]), [["2026-09-01", 50, 0, 0], ["2026-09-02", 200, 400, 2]]);
+  });
+});
 
 const connection: WorkspaceData["metaConnection"] = {
   status: "connected", userName: "Dueño", connectedAt: "2026-09-13T12:00:00.000Z", lastSyncAt: "2026-09-13T12:00:00.000Z", encryptedAccessToken: "token",

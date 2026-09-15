@@ -175,6 +175,21 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - Si Meta rechaza el conjunto, el creativo o el anuncio, Pulso borra la campaña vacía que alcanzó a crear y muestra la explicación de Meta (por ejemplo, que la Página no tiene WhatsApp Business vinculado). Si solo falla la activación, todo queda en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
+## Creador de campañas guiado con IA
+
+**Nueva campaña** guía al dueño del negocio en cuatro pasos:
+
+1. **Negocio**: qué promociona, cliente ideal, zona, sitio web (opcional), detalles y la Página que publica. **Recomendar con IA** (`POST /api/ai/campaign-plan`) propone objetivo, público, presupuesto diario y consejos, con la razón de cada uno. Las ubicaciones e intereses que sugiere se buscan en Meta y solo se usan los que Meta reconoce; si la IA propone Ventas sin Pixel o sin sitio web, se cambia a Mensajes.
+2. **Público**: objetivo, edad, género, ubicaciones (país, estado o ciudad con radio de 17 km) e intereses, con buscador conectado a Meta (`GET /api/meta/targeting-search`). Con **Advantage+** (predeterminado), la edad y los intereses son sugerencias que Meta puede ampliar, la edad mínima firme es de hasta 25 y el género lo optimiza Meta. Con **público exacto** se aplican tal cual.
+3. **Anuncio**: foto (JPG/PNG hasta 4 MB) o video (MP4/MOV hasta 50 MB). **Sugerir copy** (`POST /api/ai/ad-copy`) envía a la IA una versión reducida de la foto o un cuadro del video y devuelve tres opciones con ángulos distintos.
+4. **Confirmar** y publicar o crear en pausa.
+
+Los videos no pasan por Vercel (límite de 4.5 MB por petición): el navegador los sube a Supabase Storage (bucket privado `pulso-ad-media`, se crea solo) con una URL firmada (`POST /api/media/video-upload`), Meta los descarga con `file_url`, Pulso espera a que terminen de procesarse (hasta 150 s) y usa el cuadro capturado como portada. El archivo temporal se borra al terminar.
+
+## Vista por página
+
+Además de la cuenta publicitaria, el menú lateral tiene un selector **Página** con las páginas que tienen campañas en esa cuenta (y las campañas sin página detectada). Al elegir una, el Dashboard (inversión, ingresos, ROAS, resultados y gráfica), Campañas y Agentes IA (tarjetas, revisión por campaña y el análisis campaña por campaña) muestran solo sus campañas. El límite mensual, los fondos y la proyección siguen siendo de toda la cuenta, porque así los cobra Meta. La gráfica por página suma las series diarias por campaña que guarda la sincronización (`campaignMetrics`), así que requiere sincronizar una vez después de actualizar. Nueva campaña preselecciona la página elegida.
+
 ## Equipo de agentes
 
 Cada tarjeta en **Agentes IA** muestra un diagnóstico en vivo con los mismos umbrales con los que el agente actúa, su estado (al día, alerta o sin datos) y **Ver decisiones**, que abre su historial con el estado actual de cada cambio:

@@ -8,11 +8,14 @@ import {
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { Ad, AgentAction, AgentName, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AgentName, AudienceSpec, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization, TargetLocation } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, agentBriefs, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
+import type { TargetingOption } from "@/lib/meta";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
+import { DEFAULT_AUDIENCE, describeAudience } from "@/lib/targeting";
+import { ALL_PAGES, NO_PAGE, campaignsForPage, pageOptions, sumMetrics } from "@/lib/workspace";
 
 type Decision = "approve" | "reject" | "resume";
 
@@ -111,6 +114,8 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const [toast, setToast] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   const [aiModels, setAiModels] = useState<string[]>([]);
+  // Besides the ad account, the view can narrow to the campaigns of one Page.
+  const [pageScope, setPageScope] = useState<string>(ALL_PAGES);
   const organization = data.organizations.find((item) => item.id === organizationId) || data.organizations[0];
   const campaigns = data.campaigns.filter((item) => item.organizationId === organization?.id);
   const activities = data.activities.filter((item) => item.organizationId === organization?.id);
@@ -120,6 +125,16 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const actions = data.actions.filter((item) => item.organizationId === organization?.id);
   const pendingCount = actions.filter((item) => item.status === "pending").length;
   const metrics = data.metrics[organization?.id] || [];
+  const scopeOptions = pageOptions(campaigns, data.pages ?? []);
+  const scoped = pageScope !== ALL_PAGES;
+  const scopedCampaigns = campaignsForPage(campaigns, pageScope);
+  const scopedIds = new Set(scopedCampaigns.map((campaign) => campaign.id));
+  const scopedAds = scoped ? ads.filter((ad) => scopedIds.has(ad.campaignId)) : ads;
+  const scopedActions = scoped ? actions.filter((action) => scopedIds.has(action.campaignId)) : actions;
+  const scopedMetrics = scoped ? sumMetrics(data.campaignMetrics, [...scopedIds]) : metrics;
+  const scopeName = pageScope === NO_PAGE ? "Sin página detectada" : data.pages?.find((page) => page.id === pageScope)?.name ?? "Página";
+  const storedReview = organization ? data.campaignReviews?.[organization.id] : undefined;
+  const scopedReview = storedReview && scoped ? { ...storedReview, items: storedReview.items.filter((item) => scopedIds.has(item.campaignId)) } : storedReview;
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [reviewProgress, setReviewProgress] = useState<ReviewProgress | null>(null);
   const [reviewFailures, setReviewFailures] = useState<string[]>([]);
@@ -177,6 +192,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   /** Account run first (limits, pacing, rules), then every campaign analyzed on its own by the AI, one request each. */
   async function analyzeEachCampaign() {
     const organizationIdAtStart = organization.id;
+    const scopeAtStart = pageScope;
     setRunning(true);
     setReviewFailures([]);
     stopReviews.current = false;
@@ -190,7 +206,9 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
       if (!workspaceResponse.ok) throw new Error("No se pudo leer el resultado del análisis");
       const latest: SafeWorkspace = await workspaceResponse.json();
       setData(latest);
-      const items = latest.campaignReviews?.[organizationIdAtStart]?.items ?? [];
+      // The account run covers every campaign (limits are per ad account); the one-by-one pass follows the Page scope.
+      const inScope = new Set(campaignsForPage(latest.campaigns.filter((campaign) => campaign.organizationId === organizationIdAtStart), scopeAtStart).map((campaign) => campaign.id));
+      const items = (latest.campaignReviews?.[organizationIdAtStart]?.items ?? []).filter((item) => inScope.has(item.campaignId));
       if (!aiStatus?.configured || !items.length) {
         setToast(result.summary);
         return;
@@ -306,9 +324,9 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const weekSummary = monitoringSummary(data, organization.id, new Date());
 
   const pageContent: Record<NavView, React.ReactNode> = {
-    dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
-    campaigns: <CampaignsView campaigns={campaigns} ads={ads} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
-    agents: <AgentsView organization={organization} campaigns={data.campaigns} ads={data.ads} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={analyzeEachCampaign} progress={reviewProgress} failures={reviewFailures} onStop={() => { stopReviews.current = true; }} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
+    dashboard: <DashboardView organization={organization} campaigns={scopedCampaigns} accountCampaigns={campaigns} scope={scoped ? { name: scopeName, spent: scopedCampaigns.reduce((sum, campaign) => sum + campaign.spend, 0), revenue: scopedCampaigns.reduce((sum, campaign) => sum + campaign.revenue, 0) } : undefined} activities={activities} alerts={alerts} actions={scopedActions} metrics={scopedMetrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
+    campaigns: <CampaignsView campaigns={scopedCampaigns} ads={scopedAds} scoped={scoped} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
+    agents: <AgentsView organization={organization} campaigns={scopedCampaigns} ads={scopedAds} activities={activities} actions={scopedActions} reviews={scopedReview} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={analyzeEachCampaign} progress={reviewProgress} failures={reviewFailures} onStop={() => { stopReviews.current = true; }} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
@@ -327,12 +345,20 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
             <span><b>{organization.name}</b><small>{organization.objective}</small></span><ChevronDown size={15} />
           </button>
           {organizationOpen && <div className="org-menu">
-            {data.organizations.map((org) => <button key={org.id} onClick={() => { setOrganizationId(org.id); setOrganizationOpen(false); }}>
+            {data.organizations.map((org) => <button key={org.id} onClick={() => { setOrganizationId(org.id); setPageScope(ALL_PAGES); setOrganizationOpen(false); }}>
               <span className="org-avatar small" style={{ background: org.color }}>{org.initials}</span><span>{org.name}</span>{org.id === organization.id && <Check size={15} />}
             </button>)}
             <button className="add-org"><Plus size={15} /> Conectar otro negocio</button>
           </div>}
         </div>
+        {(scopeOptions.pages.length > 0 || scopeOptions.withoutPage > 0) && <label className="page-scope">
+          <span className="side-label">PÁGINA</span>
+          <select value={pageScope} onChange={(event) => setPageScope(event.target.value)} aria-label="Ver por página">
+            <option value={ALL_PAGES}>Todas las páginas ({campaigns.length})</option>
+            {scopeOptions.pages.map((page) => <option key={page.id} value={page.id}>{page.name} ({page.campaigns})</option>)}
+            {scopeOptions.withoutPage > 0 && <option value={NO_PAGE}>Sin página detectada ({scopeOptions.withoutPage})</option>}
+          </select>
+        </label>}
         <nav>
           <div className="side-label">NAVEGACIÓN</div>
           {navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
@@ -359,6 +385,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
         <header className="topbar">
           <div><span className="eyebrow">{viewTitles[view].eyebrow}</span><h1>{viewTitles[view].title}</h1></div>
           <div className="top-actions">
+            {scoped && <div className="scope-chip"><span>Página: <b>{scopeName}</b></span><button onClick={() => setPageScope(ALL_PAGES)} aria-label="Ver todas las páginas"><X size={13} /></button></div>}
             <div className={`connection-chip ${data.metaConnection.status}`}><span />{data.metaConnection.status === "connected" ? "Meta conectado" : data.metaConnection.status === "demo" ? "Modo demo" : "Sin conexión"}</div>
             <button className="date-button"><CalendarDays size={16} /> Últimos 14 días <ChevronDown size={14} /></button>
             <button className="icon-button" onClick={() => setView("alerts")}><Bell size={18} />{alerts.some((alert) => !alert.read) && <i />}</button>
@@ -368,7 +395,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
         <div className="content">{pageContent[view]}</div>
       </main>
 
-      {campaignModal && <CampaignModal organization={organization} pages={data.pages ?? []} connected={data.metaConnection.status === "connected"} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
+      {campaignModal && <CampaignModal organization={organization} pages={data.pages ?? []} connected={data.metaConnection.status === "connected"} defaultPublish={organization.mode === "autonomous" || organization.mode === "yolo"} aiReady={Boolean(aiStatus?.configured)} initialPageId={scoped && pageScope !== NO_PAGE ? pageScope : undefined} onClose={() => setCampaignModal(false)} onCreated={async (message) => { setCampaignModal(false); await refreshWorkspace(); setView("campaigns"); setToast(message); }} />}
       {modeModal && <ModeModal current={organization.mode} onClose={() => setModeModal(false)} onSelect={updateMode} />}
       {toast && <div className="toast"><Check size={17} />{toast}<button onClick={() => setToast(null)}><X size={15} /></button></div>}
     </div>
@@ -409,20 +436,26 @@ function FundingStrip({ organization }: { organization: Organization }) {
   </section>;
 }
 
-function DashboardView({ organization, campaigns, activities, alerts, actions, metrics, summary, onRun, running, onNavigate }: {
+function DashboardView({ organization, campaigns, accountCampaigns, scope, activities, alerts, actions, metrics, summary, onRun, running, onNavigate }: {
   organization: Organization; campaigns: Campaign[]; activities: SafeWorkspace["activities"]; alerts: SafeWorkspace["alerts"];
+  /** Every campaign of the ad account: the monthly limit and its projection are per account even when a Page is selected. */
+  accountCampaigns: Campaign[];
+  /** Set when the view is narrowed to one Page: its name and this month's spend and revenue. */
+  scope?: { name: string; spent: number; revenue: number };
   actions: AgentAction[]; metrics: MetricPoint[]; summary: MonitoringSummary; onRun: () => void; running: boolean; onNavigate: (view: NavView) => void;
 }) {
   const now = new Date();
   const activeCampaigns = campaigns.filter((campaign) => campaign.status === "ACTIVE");
   const active = activeCampaigns.length;
   const results = campaigns.reduce((sum, campaign) => sum + campaign.results, 0);
-  const roas = organization.spentThisMonth ? organization.revenueThisMonth / organization.spentThisMonth : 0;
+  const spent = scope ? scope.spent : organization.spentThisMonth;
+  const revenue = scope ? scope.revenue : organization.revenueThisMonth;
+  const roas = spent ? revenue / spent : 0;
   const target = targetRoas(organization);
-  const returnValue = organization.revenueThisMonth - organization.spentThisMonth;
+  const returnValue = revenue - spent;
   const budgetPercent = Math.min(100, Math.round((organization.spentThisMonth / organization.monthlyLimit) * 100));
   const health = accountHealth(organization, campaigns, actions, now);
-  const projection = projectedMonthSpend(organization, campaigns, now);
+  const projection = projectedMonthSpend(organization, accountCampaigns, now);
   const overPace = projection > organization.monthlyLimit;
   const pending = actions.filter((action) => action.status === "pending").length;
   const revenueTrend = periodTrend(metrics, "revenue");
@@ -440,7 +473,7 @@ function DashboardView({ organization, campaigns, activities, alerts, actions, m
   ].filter((item): item is { icon: typeof ArrowUpRight; color: string; title: string; detail: string } => Boolean(item));
   return <>
     <section className="welcome-row">
-      <div><h2>Hola, {organization.name} <span>👋</span></h2><p>Esto es lo que está pasando con tu publicidad hoy.</p></div>
+      <div><h2>Hola, {organization.name} <span>👋</span></h2><p>{scope ? `Viendo solo la página ${scope.name}. El límite mensual y los fondos son de toda la cuenta.` : "Esto es lo que está pasando con tu publicidad hoy."}</p></div>
       <button className="run-button" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />} {running ? "Analizando…" : "Analizar ahora"}</button>
     </section>
 
@@ -452,8 +485,8 @@ function DashboardView({ organization, campaigns, activities, alerts, actions, m
     </section>
 
     <section className="metric-grid">
-      <MetricCard label="Inversión" value={money(organization.spentThisMonth)} note={`${budgetPercent}% de ${money(organization.monthlyLimit)}`} trend={periodTrend(metrics, "spend")} icon={CircleDollarSign} color="violet" progress={budgetPercent} />
-      <MetricCard label="Ingresos atribuidos" value={money(organization.revenueThisMonth)} note="Reportado por Meta" trend={revenueTrend} icon={TrendingUp} color="green" />
+      <MetricCard label="Inversión" value={money(spent)} note={scope ? `de ${money(organization.spentThisMonth)} en toda la cuenta` : `${budgetPercent}% de ${money(organization.monthlyLimit)}`} trend={periodTrend(metrics, "spend")} icon={CircleDollarSign} color="violet" progress={scope ? undefined : budgetPercent} />
+      <MetricCard label="Ingresos atribuidos" value={money(revenue)} note="Reportado por Meta" trend={revenueTrend} icon={TrendingUp} color="green" />
       <MetricCard label="ROAS" value={`${roas.toFixed(2)}×`} note={`Meta de la cuenta: ${target.toFixed(2)}×`} trend={periodTrend(metrics, "roas")} icon={CircleGauge} color="blue" />
       <MetricCard label="Resultados" value={String(Math.round(results))} note={`${active} campañas activas`} trend={null} icon={Target} color="orange" />
     </section>
@@ -687,19 +720,20 @@ function ActivityList({ activities }: { activities: SafeWorkspace["activities"] 
   }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
 }
 
-function CampaignsView({ campaigns, ads, pages, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; pages: ManagedPage[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
+function CampaignsView({ campaigns, ads, scoped, pages, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; scoped: boolean; pages: ManagedPage[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
   const [query, setQuery] = useState("");
   const [pageFilter, setPageFilter] = useState("all");
   const pageNames = new Map(pages.map((page) => [page.id, page.name]));
   const withoutPage = campaigns.filter((campaign) => !campaign.pageIds?.length);
-  const byPage = pageFilter === "all" ? campaigns
+  // With a Page selected in the sidebar the list is already narrowed, so the local filter steps aside.
+  const byPage = scoped || pageFilter === "all" ? campaigns
     : pageFilter === "none" ? withoutPage
       : campaigns.filter((campaign) => campaign.pageIds?.includes(pageFilter));
   const filtered = byPage.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
   return <div className="page-stack">
     <div className="page-intro"><div><h2>Todas tus campañas</h2><p>Supervisa resultados y deja que Pulso optimice la inversión.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Crear con IA</button></div>
     <div className="summary-strip"><div><span>Campañas</span><b>{byPage.length}</b></div><div><span>Activas</span><b className="green-text">{byPage.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(byPage.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(byPage.reduce((sum, c) => sum + c.roas, 0) / Math.max(byPage.length, 1)).toFixed(2)}×</b></div></div>
-    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div>{pages.length > 0 && <select className="page-filter" aria-label="Filtrar por página" value={pageFilter} onChange={(event) => setPageFilter(event.target.value)}>
+    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div>{pages.length > 0 && !scoped && <select className="page-filter" aria-label="Filtrar por página" value={pageFilter} onChange={(event) => setPageFilter(event.target.value)}>
       <option value="all">Todas las páginas ({campaigns.length})</option>
       {pages.map((page) => <option key={page.id} value={page.id}>{page.name} ({campaigns.filter((campaign) => campaign.pageIds?.includes(page.id)).length})</option>)}
       {withoutPage.length > 0 && <option value="none">Sin página detectada ({withoutPage.length})</option>}
@@ -1111,17 +1145,124 @@ function isWebsite(value: string): boolean {
   }
 }
 
-function CampaignModal({ organization, pages, connected, defaultPublish, onClose, onCreated }: { organization: Organization; pages: ManagedPage[]; connected: boolean; defaultPublish: boolean; onClose: () => void; onCreated: (message: string) => void }) {
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const VIDEO_TYPES = ["video/mp4", "video/quicktime"];
+const LOCATION_TYPE: Record<TargetLocation["type"], string> = { country: "País", region: "Estado", city: "Ciudad" };
+
+type CampaignPlanResult = {
+  plan: { objective: Organization["objective"]; objectiveReason: string; messagingApp: MessagingApp | null; customerProfile: string; audienceReason: string; dailyBudget: number; budgetReason: string; tips: string[] };
+  audience: AudienceSpec;
+  unresolved: string[];
+};
+type AdMedia = { kind: "image" | "video"; file: File; preview: string; cover: Blob };
+type CopyOption = { headline: string; primaryText: string; angle: string };
+
+/** A JPEG frame from about one second into the video: Meta's cover image and what the AI reads. */
+async function videoCover(file: File): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  try {
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    const loaded = new Promise<void>((resolve, reject) => {
+      video.onloadeddata = () => resolve();
+      video.onerror = () => reject(new Error("No pudimos leer el video. Usa MP4 o MOV."));
+    });
+    video.src = url;
+    await loaded;
+    const target = Math.min(1, (video.duration || 0) / 2);
+    if (target > 0) {
+      const seeked = new Promise<void>((resolve) => { video.onseeked = () => resolve(); });
+      video.currentTime = target;
+      await seeked;
+    }
+    const scale = Math.min(1, 1080 / Math.max(video.videoWidth, video.videoHeight, 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("No pudimos tomar la portada del video.")), "image/jpeg", 0.86));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Downscaled JPEG data URL, small enough to send to the model. */
+async function jpegDataUrl(blob: Blob, maxSide = 768): Promise<string> {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL("image/jpeg", 0.8);
+}
+
+type PickerItem = { id: string; name: string; detail?: string };
+
+function TargetingPicker({ organizationId, kind, connected, selected, onAdd, onRemove }: {
+  organizationId: string; kind: "location" | "interest"; connected: boolean; selected: PickerItem[]; onAdd: (option: TargetingOption) => void; onRemove: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<TargetingOption[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const term = query.trim();
+
+  useEffect(() => {
+    if (!connected || term.length < 2) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setSearching(true);
+      try {
+        const response = await fetch(`/api/meta/targeting-search?${new URLSearchParams({ organizationId, kind, q: term })}`, { signal: controller.signal, cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        setResults(result.options ?? []);
+        setNote(result.reason ?? null);
+      } catch {
+        if (!controller.signal.aborted) setNote("No se pudo buscar en Meta.");
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
+      }
+    }, 350);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [term, kind, connected, organizationId]);
+
+  return <div className="targeting-picker">
+    {selected.length > 0 && <div className="chip-list">{selected.map((item) => <span className="chip" key={item.id}>{item.name}{item.detail && <small>{item.detail}</small>}<button type="button" aria-label={`Quitar ${item.name}`} onClick={() => onRemove(item.id)}><X size={12}/></button></span>)}</div>}
+    {connected
+      ? <div className="picker-search"><Search size={14}/><input value={query} placeholder={kind === "location" ? "Agregar ciudad, estado o país" : "Agregar interés, p. ej. fútbol o decoración"} onChange={(event) => setQuery(event.target.value)}/>{searching && <LoaderCircle className="spin" size={14}/>}</div>
+      : <p className="field-note">Conecta Meta para buscar {kind === "location" ? "ubicaciones" : "intereses"}.</p>}
+    {term.length >= 2 && (results.length > 0 || note) && <div className="picker-results">
+      {results.map((option) => <button type="button" key={option.type === "interest" ? option.id : `${option.type}:${option.key}`} onClick={() => { onAdd(option); setQuery(""); setResults([]); }}>
+        <b>{option.name}</b><small>{option.type === "interest" ? option.detail ?? "Interés" : `${LOCATION_TYPE[option.type]}${option.detail ? ` · ${option.detail}` : ""}`}</small>
+      </button>)}
+      {!results.length && note && <p className="field-note">{note}</p>}
+    </div>}
+  </div>;
+}
+
+function CampaignModal({ organization, pages, connected, defaultPublish, aiReady, initialPageId, onClose, onCreated }: {
+  organization: Organization; pages: ManagedPage[]; connected: boolean; defaultPublish: boolean; aiReady: boolean; initialPageId?: string; onClose: () => void; onCreated: (message: string) => void;
+}) {
   const [step, setStep] = useState(1);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [form, setForm] = useState({ offer: "", objective: organization.objective, pageId: organization.pageId ?? pages[0]?.id ?? "", destination: "", leadFormId: "", messagingApp: "WHATSAPP" as MessagingApp, dailyBudget: 500, headline: "", primaryText: "", publish: defaultPublish });
+  const [brief, setBrief] = useState({ offer: "", customer: "", area: "", details: "", website: "" });
+  const [form, setForm] = useState({ objective: organization.objective, pageId: initialPageId ?? organization.pageId ?? pages[0]?.id ?? "", destination: "", leadFormId: "", messagingApp: "WHATSAPP" as MessagingApp, dailyBudget: 500, headline: "", primaryText: "", publish: defaultPublish });
+  const [audience, setAudience] = useState<AudienceSpec>(DEFAULT_AUDIENCE);
+  const [plan, setPlan] = useState<CampaignPlanResult | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [media, setMedia] = useState<AdMedia | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [preparingMedia, setPreparingMedia] = useState(false);
+  const [copyOptions, setCopyOptions] = useState<CopyOption[]>([]);
+  const [writingCopy, setWritingCopy] = useState(false);
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [leadForms, setLeadForms] = useState<{ forms: Array<{ id: string; name: string }>; reason?: string } | null>(null);
   const choosePages = connected && pages.length > 0;
   const selectedPage = pages.find((page) => page.id === form.pageId);
-  const [image, setImage] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [imageError, setImageError] = useState<string | null>(null);
-  const [leadForms, setLeadForms] = useState<{ forms: Array<{ id: string; name: string }>; reason?: string } | null>(null);
   const estimatedMonth = form.dailyBudget * 30;
 
   useEffect(() => {
@@ -1132,57 +1273,129 @@ function CampaignModal({ organization, pages, connected, defaultPublish, onClose
       .catch(() => setLeadForms({ forms: [], reason: "No fue posible cargar los formularios." }));
   }, [form.objective, form.pageId, connected, leadForms, organization.id]);
 
-  function chooseImage(file: File | null) {
-    if (preview) URL.revokeObjectURL(preview);
-    if (file && (!["image/jpeg", "image/png"].includes(file.type) || file.size > MAX_IMAGE_BYTES)) {
-      setImage(null); setPreview(null); setImageError("Usa una imagen JPG o PNG de hasta 4 MB.");
-      return;
-    }
-    setImageError(null); setImage(file); setPreview(file ? URL.createObjectURL(file) : null);
+  async function askPlan() {
+    setPlanning(true); setError(null);
+    try {
+      const response = await fetch("/api/ai/campaign-plan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organizationId: organization.id, ...(choosePages && form.pageId && { pageId: form.pageId }), ...brief }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "La IA no pudo preparar la recomendación.");
+      const recommendation = result as CampaignPlanResult;
+      setPlan(recommendation);
+      setAudience(recommendation.audience);
+      setForm((current) => ({
+        ...current,
+        objective: recommendation.plan.objective,
+        messagingApp: recommendation.plan.messagingApp ?? current.messagingApp,
+        dailyBudget: recommendation.plan.dailyBudget,
+        destination: current.destination || brief.website,
+      }));
+      setStep(2);
+    } catch (planError) {
+      setError(planError instanceof Error ? planError.message : "La IA no pudo preparar la recomendación.");
+    } finally { setPlanning(false); }
+  }
+
+  async function chooseMedia(file: File | null) {
+    if (media) URL.revokeObjectURL(media.preview);
+    setMedia(null); setMediaError(null); setCopyOptions([]);
+    if (!file) return;
+    const isVideo = VIDEO_TYPES.includes(file.type);
+    if (!isVideo && !["image/jpeg", "image/png"].includes(file.type)) { setMediaError("Usa una foto JPG o PNG, o un video MP4 o MOV."); return; }
+    if (!isVideo && file.size > MAX_IMAGE_BYTES) { setMediaError("La foto debe pesar hasta 4 MB."); return; }
+    if (isVideo && file.size > MAX_VIDEO_BYTES) { setMediaError("El video debe pesar hasta 50 MB."); return; }
+    setPreparingMedia(true);
+    try {
+      const cover = isVideo ? await videoCover(file) : file;
+      setMedia({ kind: isVideo ? "video" : "image", file, preview: URL.createObjectURL(file), cover });
+    } catch (coverError) {
+      setMediaError(coverError instanceof Error ? coverError.message : "No pudimos leer el archivo.");
+    } finally { setPreparingMedia(false); }
+  }
+
+  async function suggestCopy() {
+    setWritingCopy(true); setError(null);
+    try {
+      const image = media ? await jpegDataUrl(media.cover) : undefined;
+      const response = await fetch("/api/ai/ad-copy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: organization.id, offer: brief.offer, objective: form.objective, customer: plan?.plan.customerProfile || brief.customer,
+          details: brief.details, audience: describeAudience(audience), mediaKind: media?.kind ?? "none", ...(image && { image }),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "La IA no pudo escribir el texto.");
+      const variants = (result.variants ?? []) as CopyOption[];
+      setCopyOptions(variants);
+      if (variants[0]) setForm((current) => current.headline || current.primaryText ? current : { ...current, headline: variants[0].headline, primaryText: variants[0].primaryText });
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : "La IA no pudo escribir el texto.");
+    } finally { setWritingCopy(false); }
   }
 
   const destinationReady = form.objective === "Ventas" ? isWebsite(form.destination)
     : form.objective === "Prospectos" ? !connected || Boolean(form.leadFormId)
       : true;
   const copyReady = form.headline.trim().length >= 3 && form.headline.trim().length <= 60 && form.primaryText.trim().length >= 10 && form.primaryText.trim().length <= 500;
-  const canContinue = step === 1
-    ? form.offer.trim().length >= 3 && destinationReady && (!choosePages || Boolean(selectedPage))
-    : estimatedMonth <= organization.monthlyLimit && copyReady && (!connected || Boolean(image));
+  const canContinue = step === 1 ? brief.offer.trim().length >= 3 && (!choosePages || Boolean(selectedPage))
+    : step === 2 ? destinationReady && form.dailyBudget >= 100 && estimatedMonth <= organization.monthlyLimit && audience.locations.length > 0
+      : copyReady && (!connected || Boolean(media)) && !preparingMedia;
 
   function next() {
-    if (step === 1) {
+    if (step === 2 && !aiReady) {
       setForm((current) => ({
         ...current,
-        headline: current.headline || current.offer.trim().slice(0, 60),
-        primaryText: current.primaryText || defaultPrimaryText(current.offer.trim(), current.objective),
+        headline: current.headline || brief.offer.trim().slice(0, 60),
+        primaryText: current.primaryText || defaultPrimaryText(brief.offer.trim(), current.objective),
       }));
     }
     setStep(step + 1);
   }
 
   async function submit() {
-    setSubmitting(true); setSubmitError(null);
-    const body = new FormData();
-    body.set("organizationId", organization.id);
-    body.set("offer", form.offer);
-    body.set("objective", form.objective);
-    body.set("headline", form.headline);
-    body.set("primaryText", form.primaryText);
-    body.set("dailyBudget", String(form.dailyBudget));
-    body.set("publish", String(form.publish));
-    if (choosePages && form.pageId) body.set("pageId", form.pageId);
-    if (form.objective === "Ventas") body.set("destination", form.destination);
-    if (form.objective === "Prospectos" && form.leadFormId) body.set("leadFormId", form.leadFormId);
-    if (form.objective === "Mensajes") body.set("messagingApp", form.messagingApp);
-    if (image) body.set("image", image);
+    setError(null);
     try {
+      let videoPath: string | undefined;
+      if (media?.kind === "video" && connected) {
+        setSubmitting("Subiendo video…");
+        const ticketResponse = await fetch("/api/media/video-upload", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contentType: media.file.type, size: media.file.size }),
+        });
+        const ticket = await ticketResponse.json().catch(() => ({}));
+        if (!ticketResponse.ok) throw new Error(ticket.error || "No se pudo preparar la subida del video.");
+        const upload = new FormData();
+        upload.append("cacheControl", "3600");
+        upload.append("", media.file);
+        const stored = await fetch(ticket.signedUrl, { method: "PUT", body: upload });
+        if (!stored.ok) throw new Error("No se pudo subir el video. Revisa tu conexión e intenta de nuevo.");
+        videoPath = ticket.path;
+      }
+      setSubmitting(videoPath ? "Meta está procesando el video…" : connected ? "Creando en Meta…" : "Creando…");
+      const body = new FormData();
+      body.set("organizationId", organization.id);
+      body.set("offer", brief.offer);
+      body.set("objective", form.objective);
+      body.set("headline", form.headline);
+      body.set("primaryText", form.primaryText);
+      body.set("dailyBudget", String(form.dailyBudget));
+      body.set("publish", String(form.publish));
+      body.set("audience", JSON.stringify(audience));
+      if (choosePages && form.pageId) body.set("pageId", form.pageId);
+      if (form.objective === "Ventas") body.set("destination", form.destination);
+      if (form.objective === "Prospectos" && form.leadFormId) body.set("leadFormId", form.leadFormId);
+      if (form.objective === "Mensajes") body.set("messagingApp", form.messagingApp);
+      if (media) body.set("image", media.kind === "video" ? new File([media.cover], "portada.jpg", { type: "image/jpeg" }) : media.file);
+      if (videoPath) body.set("videoPath", videoPath);
       const response = await fetch("/api/campaigns", { method: "POST", body });
       const result = await response.json().catch(() => ({}));
-      if (response.ok) onCreated(result.message || "Campaña creada.");
-      else setSubmitError(result.error || (response.status === 413 ? "La imagen es demasiado grande." : "No fue posible crear la campaña."));
-    } catch {
-      setSubmitError("No fue posible crear la campaña.");
-    } finally { setSubmitting(false); }
+      if (!response.ok) throw new Error(result.error || (response.status === 413 ? "La imagen es demasiado grande." : "No fue posible crear la campaña."));
+      onCreated(result.message || "Campaña creada.");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "No fue posible crear la campaña.");
+    } finally { setSubmitting(null); }
   }
 
   const destinationSummary = form.objective === "Ventas" ? form.destination
@@ -1191,13 +1404,34 @@ function CampaignModal({ organization, pages, connected, defaultPublish, onClose
   const publishNote = connected
     ? `${selectedPage ? `Publica la Página ${selectedPage.name}. ` : ""}${form.publish ? "Se creará en Meta y empezará a entregarse." : "Se creará en Meta en pausa para que la actives después."}`
     : "Modo demo: el lanzamiento se simula.";
+  const steps = ["Negocio", "Público", "Anuncio", "Confirmar"];
+  const mediaPreview = media && (media.kind === "video"
+    ? <video src={media.preview} autoPlay muted loop playsInline/>
+    // Local blob previews cannot go through next/image.
+    // eslint-disable-next-line @next/next/no-img-element
+    : <img src={media.preview} alt="Vista previa del anuncio"/>);
 
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal campaign-modal"><div className="modal-head"><div><span>CREADOR DE CAMPAÑAS</span><h2>Nueva campaña</h2></div><button onClick={onClose}><X size={19}/></button></div><div className="stepper"><div className={step >= 1 ? "active" : ""}><span>{step > 1 ? <Check size={13}/> : "1"}</span>Objetivo</div><i/><div className={step >= 2 ? "active" : ""}><span>{step > 2 ? <Check size={13}/> : "2"}</span>Anuncio</div><i/><div className={step >= 3 ? "active" : ""}><span>3</span>Confirmar</div></div>
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}><div className="modal campaign-modal">
+    <div className="modal-head"><div><span>CREADOR GUIADO CON IA</span><h2>Nueva campaña</h2></div><button onClick={onClose} disabled={Boolean(submitting)}><X size={19}/></button></div>
+    <div className="stepper">{steps.map((label, index) => <Fragment key={label}>{index > 0 && <i/>}<div className={step >= index + 1 ? "active" : ""}><span>{step > index + 1 ? <Check size={13}/> : index + 1}</span>{label}</div></Fragment>)}</div>
     <div className="modal-body">
       {step === 1 && <div className="form-step">
-        <div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus maxLength={120} placeholder="Ej. Colección de muebles de otoño" value={form.offer} onChange={(e) => setForm({ ...form, offer: e.target.value })}/><small>Describe el producto, servicio u oferta en una frase.</small></div>
+        {aiReady
+          ? <div className="ai-guide-note"><Sparkles size={17}/><p><b>Cuéntale a Pulso sobre tu negocio</b><span>La IA te recomendará objetivo, público y presupuesto, y después el texto de tu anuncio a partir de tu foto o video. Tú decides y puedes cambiar todo.</span></p></div>
+          : <div className="ai-guide-note muted"><Bot size={17}/><p><b>La IA no está disponible</b><span>Configura OpenAI para recibir recomendaciones. Puedes crear la campaña tú mismo.</span></p></div>}
+        <div className="field"><label>¿Qué quieres promocionar?</label><input autoFocus maxLength={120} placeholder="Ej. Uniformes deportivos personalizados para equipos" value={brief.offer} onChange={(e) => setBrief({ ...brief, offer: e.target.value })}/></div>
+        <div className="field"><label>¿Quién es tu cliente ideal?</label><textarea className="short" maxLength={300} placeholder="Ej. Entrenadores y papás de equipos infantiles de fútbol que buscan uniformes con buen precio" value={brief.customer} onChange={(e) => setBrief({ ...brief, customer: e.target.value })}/></div>
+        <div className="field-row">
+          <div className="field"><label>¿Dónde están tus clientes?</label><input maxLength={120} placeholder="Ej. Oaxaca de Juárez y alrededores" value={brief.area} onChange={(e) => setBrief({ ...brief, area: e.target.value })}/></div>
+          <div className="field"><label>Sitio web <small>(opcional)</small></label><input type="url" maxLength={500} placeholder="https://tusitio.mx" value={brief.website} onChange={(e) => setBrief({ ...brief, website: e.target.value })}/></div>
+        </div>
+        <div className="field"><label>Detalles que ayudan a vender <small>(opcional)</small></label><textarea className="short" maxLength={600} placeholder="Precio, promoción, horario, entrega, qué te hace diferente…" value={brief.details} onChange={(e) => setBrief({ ...brief, details: e.target.value })}/></div>
         {choosePages && <div className="field"><label>Página que publica</label><select value={form.pageId} onChange={(e) => { setForm({ ...form, pageId: e.target.value, leadFormId: "" }); setLeadForms(null); }}>{!selectedPage && <option value="">Elige una página</option>}{pages.map((page) => <option key={page.id} value={page.id}>{page.name}{page.instagramHandle ? ` · ${page.instagramHandle}` : ""}</option>)}</select><small>El anuncio sale a nombre de esta Página{selectedPage?.instagramHandle ? ` y de ${selectedPage.instagramHandle} en Instagram` : ""}; la inversión se carga a {organization.name}.</small></div>}
-        <div className="field"><label>Objetivo principal</label><div className="objective-grid">{(["Ventas", "Prospectos", "Mensajes"] as const).map((objective) => <button key={objective} type="button" className={form.objective === objective ? "selected" : ""} onClick={() => setForm({ ...form, objective })}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}</b><small>{OBJECTIVE_HINTS[objective]}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div></div>
+      </div>}
+
+      {step === 2 && <div className="form-step">
+        {plan && <div className="ai-plan"><Sparkles size={17}/><div><b>Recomendación de Pulso</b><p>{plan.plan.customerProfile}</p>{plan.plan.tips.length > 0 && <ul>{plan.plan.tips.map((tip) => <li key={tip}>{tip}</li>)}</ul>}</div></div>}
+        <div className="field"><label>Objetivo principal</label><div className="objective-grid">{(["Ventas", "Prospectos", "Mensajes"] as const).map((objective) => <button key={objective} type="button" className={form.objective === objective ? "selected" : ""} onClick={() => { setForm({ ...form, objective }); setLeadForms(null); }}>{objective === "Ventas" ? <CircleDollarSign size={19}/> : objective === "Prospectos" ? <Target size={19}/> : <MessageCircle size={19}/>}<span><b>{objective}{plan?.plan.objective === objective && <em className="ai-badge">IA</em>}</b><small>{OBJECTIVE_HINTS[objective]}</small></span>{form.objective === objective && <Check size={15}/>}</button>)}</div>{plan && <small className="ai-reason">{plan.plan.objectiveReason}</small>}</div>
         {form.objective === "Ventas" && <div className="field"><label>Página de destino</label><input type="url" placeholder="https://tusitio.mx/producto" value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })}/><small>Debe tener instalado el Pixel con el evento Purchase.</small></div>}
         {form.objective === "Prospectos" && <div className="field"><label>Formulario instantáneo</label>
           {!connected ? <p className="field-note">En modo demo el formulario se simula. Con Meta conectado elegirás uno de tu Página.</p>
@@ -1206,29 +1440,77 @@ function CampaignModal({ organization, pages, connected, defaultPublish, onClose
                 : <p className="field-note warning">{leadForms.reason || "Tu Página no tiene formularios activos. Crea uno en Meta Business Suite → Formularios instantáneos."}</p>}
         </div>}
         {form.objective === "Mensajes" && <div className="field"><label>¿Dónde recibirás los mensajes?</label><div className="choice-row">{(["WHATSAPP", "MESSENGER"] as const).map((app) => <button key={app} type="button" className={form.messagingApp === app ? "selected" : ""} onClick={() => setForm({ ...form, messagingApp: app })}><MessageCircle size={16}/>{app === "WHATSAPP" ? "WhatsApp" : "Messenger"}</button>)}</div><small>{form.messagingApp === "WHATSAPP" ? "Tu Página necesita un número de WhatsApp Business vinculado." : "Los mensajes llegan a la bandeja de tu Página."}</small></div>}
-      </div>}
-      {step === 2 && <div className="form-step">
-        <div className="field"><label>Imagen del anuncio{connected ? "" : " (opcional en demo)"}</label><label className="image-drop">{preview
-          // eslint-disable-next-line @next/next/no-img-element
-          ? <img src={preview} alt="Vista previa del anuncio"/>
-          : <span><ImageIcon size={22}/><b>Elige una imagen JPG o PNG</b><small>Recomendado 1080×1080 px, hasta 4 MB</small></span>}<input type="file" accept="image/jpeg,image/png" onChange={(e) => chooseImage(e.target.files?.[0] ?? null)}/></label>{imageError && <p className="field-note warning">{imageError}</p>}</div>
-        <div className="field"><label>Título <span className="char-count">{form.headline.length}/60</span></label><input maxLength={60} value={form.headline} onChange={(e) => setForm({ ...form, headline: e.target.value })}/></div>
-        <div className="field"><label>Texto principal <span className="char-count">{form.primaryText.length}/500</span></label><textarea maxLength={500} value={form.primaryText} onChange={(e) => setForm({ ...form, primaryText: e.target.value })}/></div>
-        <div className="field"><label>Presupuesto diario</label><div className="money-input"><b>$</b><input type="number" min="100" value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })}/><em>MXN</em></div><small>Audiencia Advantage+ en México, de 18 a 65 años.</small></div>
+
+        <div className="field"><label>Público</label>
+          <div className="audience-box">
+            <label className="publish-toggle compact"><input type="checkbox" checked={audience.advantage} onChange={(event) => setAudience({ ...audience, advantage: event.target.checked })}/><span/><div><b>Audiencia Advantage+</b><small>{audience.advantage ? "Meta toma tu público como sugerencia y lo amplía si encuentra mejores resultados. Recomendado para la mayoría." : "Público exacto: Meta solo muestra el anuncio dentro de estos límites."}</small></div></label>
+            <div className="audience-row">
+              <label><span>Edad</span><div className="age-inputs"><input type="number" min={18} max={65} value={audience.ageMin} onChange={(event) => setAudience({ ...audience, ageMin: Number(event.target.value) })}/><em>a</em><input type="number" min={18} max={65} value={audience.ageMax} onChange={(event) => setAudience({ ...audience, ageMax: Number(event.target.value) })}/></div></label>
+              <label><span>Género</span><select value={audience.genders} disabled={audience.advantage} onChange={(event) => setAudience({ ...audience, genders: event.target.value as AudienceSpec["genders"] })}><option value="all">Todos</option><option value="female">Mujeres</option><option value="male">Hombres</option></select>{audience.advantage && <small>Con Advantage+ lo optimiza Meta</small>}</label>
+            </div>
+            <div className="audience-group"><span>Ubicaciones</span><TargetingPicker organizationId={organization.id} kind="location" connected={connected}
+              selected={audience.locations.map((location) => ({ id: `${location.type}:${location.key}`, name: location.name, detail: location.type === "country" ? undefined : LOCATION_TYPE[location.type] }))}
+              onAdd={(option) => option.type !== "interest" && setAudience((current) => ({
+                ...current,
+                // A whole country already covers its regions and cities, so choosing a smaller area replaces it.
+                locations: [...current.locations.filter((location) => option.type === "country" || location.type !== "country").filter((location) => !(location.type === option.type && location.key === option.key)), option],
+              }))}
+              onRemove={(id) => setAudience((current) => ({ ...current, locations: current.locations.filter((location) => `${location.type}:${location.key}` !== id) }))}/>
+              {!audience.locations.length && <p className="field-note warning">Agrega al menos una ubicación.</p>}
+            </div>
+            <div className="audience-group"><span>Intereses <small>{audience.advantage ? "(sugerencias para Meta)" : ""}</small></span><TargetingPicker organizationId={organization.id} kind="interest" connected={connected}
+              selected={audience.interests.map((interest) => ({ id: interest.id, name: interest.name }))}
+              onAdd={(option) => option.type === "interest" && setAudience((current) => ({ ...current, interests: [...current.interests.filter((interest) => interest.id !== option.id), { id: option.id, name: option.name, detail: option.detail }] }))}
+              onRemove={(id) => setAudience((current) => ({ ...current, interests: current.interests.filter((interest) => interest.id !== id) }))}/>
+            </div>
+            {plan && <small className="ai-reason">{plan.plan.audienceReason}</small>}
+            {plan && plan.unresolved.length > 0 && <p className="field-note">Meta no reconoció: {plan.unresolved.join(", ")}. Búscalos con otro nombre si los necesitas.</p>}
+          </div>
+        </div>
+
+        <div className="field"><label>Presupuesto diario</label><div className="money-input"><b>$</b><input type="number" min="100" value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })}/><em>MXN</em></div>{plan && <small className="ai-reason">{plan.plan.budgetReason}</small>}</div>
         <div className="estimate-box"><Gauge size={20}/><div><b>Proyección de inversión</b><p>{money(estimatedMonth)} al mes; tu límite es {money(organization.monthlyLimit)}.</p></div><span className={estimatedMonth <= organization.monthlyLimit ? "safe" : "over"}>{estimatedMonth <= organization.monthlyLimit ? "Dentro del límite" : "Supera el límite"}</span></div>
       </div>}
-      {step === 3 && <div className="form-step review-step">
-        {preview && (
-          // Local blob previews cannot go through next/image.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="review-image" src={preview} alt="Imagen del anuncio"/>
-        )}
-        <div className="review-grid"><span><small>OFERTA</small><b>{form.offer}</b></span><span><small>OBJETIVO</small><b>{form.objective} · {destinationSummary}</b></span><span><small>INVERSIÓN DIARIA</small><b>{money(form.dailyBudget)}</b></span><span><small>TÍTULO</small><b>{form.headline}</b></span></div>
+
+      {step === 3 && <div className="form-step">
+        <div className="field"><label>Foto o video del anuncio{connected ? "" : " (opcional en demo)"}</label><label className="image-drop">{mediaPreview
+          || (preparingMedia
+            ? <span><LoaderCircle className="spin" size={22}/><b>Preparando tu archivo…</b></span>
+            : <span><ImageIcon size={22}/><b>Elige una foto o un video</b><small>Foto JPG o PNG hasta 4 MB · Video MP4 o MOV hasta 50 MB · Ideal 1080×1080 o vertical 1080×1920</small></span>)}<input type="file" accept="image/jpeg,image/png,video/mp4,video/quicktime" onChange={(e) => void chooseMedia(e.target.files?.[0] ?? null)}/></label>{mediaError && <p className="field-note warning">{mediaError}</p>}</div>
+        {aiReady && <div className="copy-assist"><div><b>Texto del anuncio con IA</b><small>{media ? `Pulso ${media.kind === "video" ? "revisará un cuadro de tu video" : "revisará tu foto"} y escribirá tres opciones para ${form.objective.toLowerCase()}.` : "Sube tu foto o video para que el texto conecte con ella, o pídelo ya."}</small></div><button type="button" className="secondary-button" onClick={suggestCopy} disabled={writingCopy || preparingMedia}>{writingCopy ? <LoaderCircle className="spin" size={15}/> : <WandSparkles size={15}/>} {writingCopy ? "Escribiendo…" : copyOptions.length ? "Otras opciones" : "Sugerir copy"}</button></div>}
+        {copyOptions.length > 0 && <div className="copy-options">{copyOptions.map((option) => {
+          const chosen = form.headline === option.headline && form.primaryText === option.primaryText;
+          return <button type="button" key={`${option.angle}-${option.headline}`} className={chosen ? "selected" : ""} onClick={() => setForm({ ...form, headline: option.headline, primaryText: option.primaryText })}><em>{option.angle}</em><b>{option.headline}</b><p>{option.primaryText}</p>{chosen && <Check size={14}/>}</button>;
+        })}</div>}
+        <div className="field"><label>Título <span className="char-count">{form.headline.length}/60</span></label><input maxLength={60} value={form.headline} onChange={(e) => setForm({ ...form, headline: e.target.value })}/></div>
+        <div className="field"><label>Texto principal <span className="char-count">{form.primaryText.length}/500</span></label><textarea maxLength={500} value={form.primaryText} onChange={(e) => setForm({ ...form, primaryText: e.target.value })}/></div>
+      </div>}
+
+      {step === 4 && <div className="form-step review-step">
+        {media && <div className="review-media">{mediaPreview}</div>}
+        <div className="review-grid">
+          <span><small>OFERTA</small><b>{brief.offer}</b></span>
+          <span><small>OBJETIVO</small><b>{form.objective} · {destinationSummary}</b></span>
+          <span><small>INVERSIÓN DIARIA</small><b>{money(form.dailyBudget)}</b></span>
+          <span><small>FORMATO</small><b>{media?.kind === "video" ? "Video" : "Foto"}</b></span>
+          <span className="wide"><small>PÚBLICO</small><b>{describeAudience(audience)}</b></span>
+          <span className="wide"><small>TÍTULO</small><b>{form.headline}</b></span>
+        </div>
         <label className="publish-toggle"><input type="checkbox" checked={form.publish} onChange={(event) => setForm({ ...form, publish: event.target.checked })}/><span/><div><b>Publicar al terminar</b><small>{publishNote}</small></div></label>
+        {media?.kind === "video" && connected && <p className="field-note">Meta procesa el video antes de crear el anuncio; puede tardar uno o dos minutos.</p>}
         <div className="safety-note"><ShieldCheck size={17}/> El límite mensual y la variación máxima de 20% siempre se respetan.</div>
       </div>}
     </div>
-    {submitError && <div className="modal-error"><AlertCircle size={15}/>{submitError}</div>}<div className="modal-footer"><button className="secondary-button" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? "Cancelar" : "Atrás"}</button>{step < 3 ? <button className="primary-button" disabled={!canContinue} onClick={next}>Continuar <ChevronRight size={16}/></button> : <button className="primary-button" onClick={submit} disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={17}/> : <Rocket size={17}/>} {form.publish ? "Crear y publicar" : connected ? "Crear en pausa" : "Crear borrador"}</button>}</div></div></div>;
+    {error && <div className="modal-error"><AlertCircle size={15}/>{error}</div>}
+    <div className="modal-footer">
+      <button className="secondary-button" disabled={Boolean(submitting) || planning} onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? "Cancelar" : "Atrás"}</button>
+      {step === 1 && aiReady
+        ? <div className="footer-actions"><button className="text-button" disabled={!canContinue || planning} onClick={next}>Configurar yo mismo</button><button className="primary-button" disabled={!canContinue || planning} onClick={askPlan}>{planning ? <LoaderCircle className="spin" size={16}/> : <Sparkles size={16}/>} {planning ? "Pensando tu campaña…" : "Recomendar con IA"}</button></div>
+        : step < 4
+          ? <button className="primary-button" disabled={!canContinue} onClick={next}>Continuar <ChevronRight size={16}/></button>
+          : <button className="primary-button" onClick={submit} disabled={Boolean(submitting)}>{submitting ? <LoaderCircle className="spin" size={17}/> : <Rocket size={17}/>} {submitting ?? (form.publish ? "Crear y publicar" : connected ? "Crear en pausa" : "Crear borrador")}</button>}
+    </div>
+  </div></div>;
 }
 
 function ModeModal({ current, onClose, onSelect }: { current: AutomationMode; onClose: () => void; onSelect: (mode: AutomationMode) => void }) {

@@ -216,6 +216,121 @@ const variantsSchema = z.object({
   })).min(1).max(3),
 });
 
+const PLANNER_INSTRUCTIONS = [
+  "Eres estratega senior de Meta Ads para negocios mexicanos. Con la descripción del negocio recomienda cómo configurar UNA campaña en Facebook e Instagram y explica cada decisión en lenguaje sencillo para un dueño de negocio sin experiencia en publicidad.",
+  "objective: Ventas solo si tiene_sitio_web y tiene_pixel son true; Prospectos si conviene captar datos con un formulario instantáneo; Mensajes para negocios locales o de venta por chat. messagingApp solo con Mensajes: WHATSAPP si la venta se cierra por WhatsApp, MESSENGER en otro caso; null con otros objetivos.",
+  "audience: ageMin y ageMax entre 18 y 65; genders es all salvo que el producto sea claramente para un género; locations son de 1 a 5 nombres reales de ciudades, estados o país como los reconoce Meta (por ejemplo 'Oaxaca de Juárez', 'Jalisco' o 'México'), según la zona indicada; interests son de 2 a 6 intereses amplios en español que existan en Meta (por ejemplo 'Fútbol' o 'Decoración de interiores'); advantage es true salvo que el público deba limitarse estrictamente.",
+  "dailyBudget en MXN entre 100 y presupuesto_diario_maximo_mxn: suficiente para que Meta aprenda sin comprometer el límite mensual.",
+  "customerProfile describe en una frase al cliente ideal. tips son 2 a 4 consejos concretos para la foto o video, la oferta y la atención. No inventes precios, promociones ni datos del negocio.",
+  "Devuelve JSON estricto sin Markdown: {objective,objectiveReason,messagingApp,customerProfile,audience:{ageMin,ageMax,genders,locations,interests,advantage,reason},dailyBudget,budgetReason,tips}.",
+].join(" ");
+
+const planSchema = z.object({
+  objective: z.enum(["Ventas", "Prospectos", "Mensajes"]),
+  objectiveReason: z.string().trim().min(8).max(500),
+  messagingApp: z.enum(["WHATSAPP", "MESSENGER"]).nullish(),
+  customerProfile: z.string().trim().min(8).max(300),
+  audience: z.object({
+    ageMin: z.number().min(13).max(65),
+    ageMax: z.number().min(13).max(65),
+    genders: z.enum(["all", "male", "female"]),
+    locations: z.array(z.string().trim().min(2).max(80)).max(8),
+    interests: z.array(z.string().trim().min(2).max(80)).max(10),
+    advantage: z.boolean(),
+    reason: z.string().trim().min(8).max(500),
+  }),
+  dailyBudget: z.number().min(1),
+  budgetReason: z.string().trim().min(8).max(400),
+  tips: z.array(z.string().trim().min(4).max(280)).max(6).default([]),
+});
+
+export type AiCampaignPlan = z.infer<typeof planSchema>;
+
+export interface CampaignPlanBrief {
+  business: string;
+  pageName?: string;
+  offer: string;
+  customer: string;
+  area: string;
+  details: string;
+  website?: string;
+  hasPixel: boolean;
+  monthlyLimit: number;
+}
+
+/** Objective, audience, budget and tips for a new campaign, with the reasons a business owner can follow. */
+export async function planCampaign(model: string, brief: CampaignPlanBrief): Promise<AiCampaignPlan> {
+  const response = await openai().responses.create({
+    model,
+    store: false,
+    reasoning: REASONING,
+    max_output_tokens: 5000,
+    instructions: PLANNER_INSTRUCTIONS,
+    input: JSON.stringify({
+      negocio: brief.business,
+      pagina: brief.pageName ?? "",
+      oferta: brief.offer,
+      cliente_ideal: brief.customer,
+      zona: brief.area,
+      detalles: brief.details,
+      tiene_sitio_web: Boolean(brief.website),
+      tiene_pixel: brief.hasPixel,
+      limite_mensual_mxn: brief.monthlyLimit,
+      presupuesto_diario_maximo_mxn: Math.max(100, Math.floor(brief.monthlyLimit / 30)),
+    }),
+  });
+  return planSchema.parse(readJsonOutput(response));
+}
+
+const AD_COPY_INSTRUCTIONS = [
+  "Eres copywriter senior de anuncios de Facebook e Instagram para negocios mexicanos.",
+  "Escribe tres opciones de texto para un anuncio nuevo con ángulos distintos (beneficio principal, problema y solución, oportunidad del momento), pensadas para el cliente ideal y el objetivo de la campaña.",
+  "Si recibes la imagen o un cuadro del video, haz que el texto conecte con lo que se ve, sin describirla literalmente.",
+  "No inventes precios, descuentos, fechas, garantías, testimonios ni cifras que no estén en los datos. El llamado a la acción corresponde al objetivo: comprar en el sitio (Ventas), dejar sus datos (Prospectos) o enviar un mensaje (Mensajes).",
+  "Español de México, claro y directo, con máximo dos emojis. headline de 3 a 60 caracteres; primaryText de 10 a 500 caracteres; angle es el nombre corto del ángulo.",
+  "Devuelve JSON estricto sin Markdown: {variants:[{headline,primaryText,angle}]}.",
+].join(" ");
+
+export interface AdCopyBrief {
+  business: string;
+  offer: string;
+  objective: string;
+  customer: string;
+  details: string;
+  audience: string;
+  mediaKind: "image" | "video" | "none";
+  /** JPEG data URL of the image, or of a frame of the video. */
+  image?: string;
+}
+
+/** Three copy options for a new ad, reading its image when there is one. */
+export async function writeAdCopy(model: string, brief: AdCopyBrief): Promise<AdVariantCopy[]> {
+  const text = JSON.stringify({
+    negocio: brief.business,
+    oferta: brief.offer,
+    objetivo: brief.objective,
+    cliente_ideal: brief.customer,
+    detalles: brief.details,
+    publico: brief.audience,
+    formato: brief.mediaKind === "video" ? "video (se adjunta un cuadro)" : brief.mediaKind === "image" ? "imagen" : "sin imagen todavía",
+  });
+  const response = await openai().responses.create({
+    model,
+    store: false,
+    reasoning: REASONING,
+    max_output_tokens: 5000,
+    instructions: AD_COPY_INSTRUCTIONS,
+    input: [{
+      role: "user",
+      content: [
+        { type: "input_text", text },
+        ...(brief.image ? [{ type: "input_image" as const, image_url: brief.image, detail: "low" as const }] : []),
+      ],
+    }],
+  });
+  return variantsSchema.parse(readJsonOutput(response)).variants;
+}
+
 export interface AdVariantBrief {
   business: string;
   objective: string;

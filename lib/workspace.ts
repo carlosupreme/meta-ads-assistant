@@ -1,5 +1,41 @@
 // Pure workspace transitions for Meta connection and sync. Type-only imports so it runs under `node --test`.
-import type { Ad, ManagedPage, Organization, WorkspaceData } from "./types";
+import type { Ad, Campaign, ManagedPage, MetricPoint, Organization, WorkspaceData } from "./types";
+
+/** Page scope values besides a Page id: every campaign, or the ones whose Page is not detected yet. */
+export const ALL_PAGES = "all";
+export const NO_PAGE = "none";
+
+export function campaignsForPage<T extends Pick<Campaign, "pageIds">>(campaigns: T[], scope: string): T[] {
+  if (scope === ALL_PAGES) return campaigns;
+  if (scope === NO_PAGE) return campaigns.filter((campaign) => !campaign.pageIds?.length);
+  return campaigns.filter((campaign) => campaign.pageIds?.includes(scope));
+}
+
+/** Pages that run at least one of these campaigns, busiest first, and how many campaigns have no Page yet. */
+export function pageOptions(campaigns: Array<Pick<Campaign, "pageIds">>, pages: ManagedPage[]): { pages: Array<ManagedPage & { campaigns: number }>; withoutPage: number } {
+  return {
+    pages: pages
+      .map((page) => ({ ...page, campaigns: campaigns.filter((campaign) => campaign.pageIds?.includes(page.id)).length }))
+      .filter((page) => page.campaigns > 0)
+      .sort((a, b) => b.campaigns - a.campaigns || a.name.localeCompare(b.name)),
+    withoutPage: campaigns.filter((campaign) => !campaign.pageIds?.length).length,
+  };
+}
+
+/** Daily series for a group of campaigns: their points added by day, oldest first. */
+export function sumMetrics(campaignMetrics: Record<string, MetricPoint[]> | undefined, campaignIds: string[]): MetricPoint[] {
+  const days = new Map<string, MetricPoint>();
+  for (const id of new Set(campaignIds)) {
+    for (const point of campaignMetrics?.[id] ?? []) {
+      const key = point.day ?? point.date;
+      const total = days.get(key) ?? { day: point.day, date: point.date, spend: 0, revenue: 0, roas: 0 };
+      days.set(key, { ...total, spend: total.spend + point.spend, revenue: total.revenue + point.revenue });
+    }
+  }
+  return [...days.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, point]) => ({ ...point, roas: point.spend ? point.revenue / point.spend : 0 }));
+}
 
 /** Page an ad publishes for: its story spec Page, or the Page part of a boosted post id ("pageId_postId"). */
 export function pageIdFromCreative(specPageId: string | undefined, effectiveObjectStoryId: string | undefined): string | undefined {
@@ -68,6 +104,7 @@ export function clearDemoData(workspace: WorkspaceData): WorkspaceData {
     actions: [],
     budgetChanges: [],
     campaignReviews: {},
+    campaignMetrics: {},
   };
 }
 
@@ -100,6 +137,7 @@ export function mergeSyncedWorkspace(current: WorkspaceData, synced: WorkspaceDa
     campaigns: synced.campaigns,
     ads: synced.ads,
     metrics: synced.metrics,
+    campaignMetrics: synced.campaignMetrics,
   };
 }
 

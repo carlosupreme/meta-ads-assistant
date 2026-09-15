@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
-import type { AccountFunding, Ad, AdSetBudget, Campaign, ManagedPage, MetricPoint, Organization, WorkspaceData } from "./types";
+import { adSetName, buildTargeting } from "./targeting";
+import type { AccountFunding, Ad, AdSetBudget, AudienceSpec, Campaign, ManagedPage, MetricPoint, Organization, TargetInterest, TargetLocation, WorkspaceData } from "./types";
 import { campaignPageIds, defaultPageFor, mergePages, pageIdFromCreative, parseAvailableBalance } from "./workspace";
 
 const version = process.env.META_GRAPH_VERSION || "v26.0";
@@ -267,13 +268,25 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
   const actualCampaigns: Campaign[] = [];
   const actualAds: Ad[] = [];
   const actualMetrics: Record<string, MetricPoint[]> = {};
+  const campaignMetrics: Record<string, MetricPoint[]> = {};
+  const dayPoint = (day: string, spendValue: string | undefined, values: ActionStats | undefined): MetricPoint => {
+    const spend = Number(spendValue || 0);
+    const revenue = purchaseValue(values);
+    return {
+      day,
+      date: new Date(`${day}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
+      spend,
+      revenue,
+      roas: spend ? revenue / spend : 0,
+    };
+  };
 
   for (const [index, account] of accounts.entries()) {
     const organizationId = `meta-${account.id.replace("act_", "")}`;
     const previous = workspace.organizations.find((item) => item.adAccountId === account.id);
     const page = defaultPageFor(account.name, pages, previous?.pageId);
     const resultValue = previous?.resultValue || 0;
-    const [campaignRows, insightRows, dailyResponse, adSetRows, adRows, adInsightRows, pixelId] = await Promise.all([
+    const [campaignRows, insightRows, dailyResponse, adSetRows, adRows, adInsightRows, campaignDailyRows, pixelId] = await Promise.all([
       graphGetAll<MetaCampaign>(`${account.id}/campaigns`, token, {
         fields: "id,name,status,objective,daily_budget,updated_time",
         limit: "100",
@@ -303,8 +316,19 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
         date_preset: "last_7d",
         limit: "200",
       }),
+      // Per-campaign daily series, so a Page's chart can be built from its campaigns.
+      graphGetAll<{ campaign_id: string; date_start: string; spend?: string; action_values?: ActionStats }>(`${account.id}/insights`, token, {
+        fields: "campaign_id,spend,action_values",
+        level: "campaign",
+        date_preset: "last_14d",
+        time_increment: "1",
+        limit: "500",
+      }),
       fetchFirstPixel(account.id, token),
     ]);
+    for (const row of campaignDailyRows) {
+      (campaignMetrics[row.campaign_id] ??= []).push(dayPoint(row.date_start, row.spend, row.action_values));
+    }
 
     const insights = new Map(insightRows.map((item) => [item.campaign_id, item]));
     let totalSpend = 0;
@@ -399,16 +423,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
       funding: fundingFrom(account),
     });
 
-    actualMetrics[organizationId] = (dailyResponse.data || []).map((point) => {
-      const spend = Number(point.spend || 0);
-      const revenue = purchaseValue(point.action_values);
-      return {
-        date: new Date(`${point.date_start}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
-        spend,
-        revenue,
-        roas: spend ? revenue / spend : 0,
-      };
-    });
+    actualMetrics[organizationId] = (dailyResponse.data || []).map((point) => dayPoint(point.date_start, point.spend, point.action_values));
   }
 
   return {
@@ -419,6 +434,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
     ads: actualAds,
     pages,
     metrics: actualMetrics,
+    campaignMetrics,
   };
 }
 
@@ -437,16 +453,17 @@ export interface MetaCampaignInput {
   leadFormId?: string;
   /** Conversation app for message campaigns. */
   messagingApp?: MessagingApp;
-  image: { base64: string };
+  /** An image, or a video Meta downloads from `fileUrl` with a still frame shown before it plays. */
+  media: { kind: "image"; base64: string } | { kind: "video"; fileUrl: string; thumbnailBase64: string };
+  audience: AudienceSpec;
 }
 
 export interface CreatedMetaCampaign {
   campaignId: string;
   adSetId: string;
+  adSetName: string;
   status: "ACTIVE" | "PAUSED";
 }
-
-export const AD_SET_NAME = "Pulso · México · Audiencia Advantage+";
 
 const CAMPAIGN_OBJECTIVES: Record<Organization["objective"], string> = {
   Ventas: "OUTCOME_SALES",
@@ -514,8 +531,50 @@ async function uploadAdImage(adAccountId: string, token: string, base64: string)
   return hash;
 }
 
+const VIDEO_READY_TIMEOUT_MS = 150_000;
+const VIDEO_POLL_MS = 4_000;
+
+/** Creates the ad video from a downloadable URL and waits until Meta finishes encoding it. */
+async function uploadAdVideo(adAccountId: string, token: string, fileUrl: string, name: string): Promise<string> {
+  const { id } = await graphPost<{ id: string }>(`${adAccountId}/advideos`, token, { file_url: fileUrl, name: `Pulso · ${name}`.slice(0, 250) });
+  const deadline = Date.now() + VIDEO_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const { status } = await graphGet<{ status?: { video_status?: string; processing_phase?: { errors?: Array<{ message?: string }> } } }>(id, token, { fields: "status" });
+    if (status?.video_status === "ready") return id;
+    if (status?.video_status === "error") {
+      throw new Error(`Meta no pudo procesar el video: ${status.processing_phase?.errors?.[0]?.message ?? "revisa que sea MP4 o MOV"}.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, VIDEO_POLL_MS));
+  }
+  throw new Error("Meta sigue procesando el video. Intenta crear la campaña de nuevo en unos minutos.");
+}
+
+/** Video creatives have no `link` field: the destination travels inside the call to action, except for messages. */
+function videoCallToAction(objective: Organization["objective"], setup: ObjectiveSetup): ObjectiveSetup["callToAction"] {
+  return objective === "Mensajes" ? setup.callToAction : { ...setup.callToAction, value: { link: setup.link, ...setup.callToAction.value } };
+}
+
+export type TargetingOption = (TargetLocation | (TargetInterest & { type: "interest" }));
+
+/** Places (country, region, city) or interests Meta can target, in Latin American Spanish. */
+export async function searchTargeting(encryptedToken: string, kind: "location" | "interest", query: string): Promise<TargetingOption[]> {
+  const token = decryptSecret(encryptedToken);
+  if (kind === "interest") {
+    const rows = await graphGet<GraphResponse<{ id: string | number; name: string; path?: string[] }>>("search", token, {
+      type: "adinterest", q: query, locale: "es_LA", limit: "8",
+    });
+    return (rows.data ?? []).map((row) => ({ id: String(row.id), name: row.name, type: "interest", detail: row.path?.slice(0, -1).join(" › ") || undefined }));
+  }
+  const rows = await graphGet<GraphResponse<{ key: string; name: string; type: string; region?: string; country_name?: string }>>("search", token, {
+    type: "adgeolocation", location_types: JSON.stringify(["country", "region", "city"]), q: query, locale: "es_LA", limit: "8",
+  });
+  return (rows.data ?? []).flatMap((row): TargetingOption[] => row.type === "country" || row.type === "region" || row.type === "city"
+    ? [{ key: String(row.key), name: row.name, type: row.type, detail: [row.region, row.country_name].filter(Boolean).join(", ") || undefined }]
+    : []);
+}
+
 /**
- * Creates campaign, ad set, image creative and ad, all paused, then activates them when `publish` is set.
+ * Creates campaign, ad set, creative (image or video) and ad, all paused, then activates them when `publish` is set.
  * If Meta rejects the ad set, creative or ad, the paused campaign is deleted so no empty campaign is left behind.
  * If only activation fails, everything stays paused so nothing spends by accident.
  */
@@ -527,7 +586,10 @@ export async function createMetaCampaign(
   if (!organization.pageId) throw new Error("Selecciona una Página de Facebook antes de publicar");
   const setup = objectiveSetup(organization, input);
   const token = decryptSecret(encryptedToken);
-  const imageHash = await uploadAdImage(organization.adAccountId, token, input.image.base64);
+  const imageHash = await uploadAdImage(organization.adAccountId, token, input.media.kind === "image" ? input.media.base64 : input.media.thumbnailBase64);
+  // Upload the video before creating anything, so a rejected file leaves no empty campaign.
+  const videoId = input.media.kind === "video" ? await uploadAdVideo(organization.adAccountId, token, input.media.fileUrl, input.offer) : undefined;
+  const audienceName = adSetName(input.audience);
   const label = input.objective === "Mensajes" ? (input.messagingApp === "MESSENGER" ? "Messenger" : "WhatsApp") : input.objective;
   const campaign = await graphPost<{ id: string }>(`${organization.adAccountId}/campaigns`, token, {
     name: `Pulso · ${label} · ${input.offer}`,
@@ -542,13 +604,13 @@ export async function createMetaCampaign(
   let ad: { id: string };
   try {
     adSet = await graphPost<{ id: string }>(`${organization.adAccountId}/adsets`, token, {
-      name: AD_SET_NAME,
+      name: audienceName,
       campaign_id: campaign.id,
       daily_budget: Math.round(input.dailyBudget * 100),
       billing_event: "IMPRESSIONS",
       bid_strategy: "LOWEST_COST_WITHOUT_CAP",
-      // Meta requires an explicit Advantage+ audience choice when creating ad sets.
-      targeting: JSON.stringify({ geo_locations: { countries: ["MX"] }, age_min: 18, age_max: 65, targeting_automation: { advantage_audience: 1 } }),
+      // Meta requires an explicit Advantage+ audience choice when creating ad sets; buildTargeting always sets it.
+      targeting: JSON.stringify(buildTargeting(input.audience)),
       status: "PAUSED",
       ...setup.adSet,
     });
@@ -557,13 +619,9 @@ export async function createMetaCampaign(
       ...(organization.instagramAccountId ? { instagram_user_id: organization.instagramAccountId } : {}),
       object_story_spec: JSON.stringify({
         page_id: organization.pageId,
-        link_data: {
-          image_hash: imageHash,
-          link: setup.link,
-          message: input.primaryText,
-          name: input.headline,
-          call_to_action: setup.callToAction,
-        },
+        ...(videoId
+          ? { video_data: { video_id: videoId, image_hash: imageHash, message: input.primaryText, title: input.headline, call_to_action: videoCallToAction(input.objective, setup) } }
+          : { link_data: { image_hash: imageHash, link: setup.link, message: input.primaryText, name: input.headline, call_to_action: setup.callToAction } }),
       }),
     });
     ad = await graphPost<{ id: string }>(`${organization.adAccountId}/ads`, token, {
@@ -582,7 +640,7 @@ export async function createMetaCampaign(
     await graphPost(adSet.id, token, { status: "ACTIVE" });
     await graphPost(ad.id, token, { status: "ACTIVE" });
   }
-  return { campaignId: campaign.id, adSetId: adSet.id, status: input.publish ? "ACTIVE" : "PAUSED" };
+  return { campaignId: campaign.id, adSetId: adSet.id, adSetName: audienceName, status: input.publish ? "ACTIVE" : "PAUSED" };
 }
 
 export async function uploadAdImageWithToken(encryptedToken: string, adAccountId: string, base64: string): Promise<string> {

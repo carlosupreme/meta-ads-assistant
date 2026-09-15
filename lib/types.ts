@@ -93,6 +93,30 @@ export interface Campaign {
   updatedAt: string;
 }
 
+export interface TargetLocation {
+  /** Meta's key: a country code, or the numeric key of a region or city. */
+  key: string;
+  name: string;
+  type: "country" | "region" | "city";
+  detail?: string;
+}
+
+export interface TargetInterest {
+  id: string;
+  name: string;
+  detail?: string;
+}
+
+/** Who a new campaign reaches. With Advantage+ audience, age range and interests are suggestions Meta may widen. */
+export interface AudienceSpec {
+  advantage: boolean;
+  ageMin: number;
+  ageMax: number;
+  genders: "all" | "male" | "female";
+  locations: TargetLocation[];
+  interests: TargetInterest[];
+}
+
 export interface AdSetBudget {
   id: string;
   name: string;
@@ -236,6 +260,8 @@ export interface CampaignReview {
 }
 
 export interface MetricPoint {
+  /** ISO day (YYYY-MM-DD), used to add series from several campaigns in order. */
+  day?: string;
   date: string;
   spend: number;
   revenue: number;
@@ -297,6 +323,8 @@ export interface WorkspaceData {
   budgetChanges: BudgetChange[];
   /** Per business id, the last weeks of monitoring activity. */
   monitoring?: Record<string, MonitoringDay[]>;
+  /** Daily spend and revenue per campaign id, so a Page's series can be added from its campaigns. */
+  campaignMetrics?: Record<string, MetricPoint[]>;
   /** Per business id, the per-campaign review of the latest analysis. */
   campaignReviews?: Record<string, { at: string; items: CampaignReview[] }>;
   /** OpenAI model chosen by the workspace owner; generative AI stays off until one is picked. */
