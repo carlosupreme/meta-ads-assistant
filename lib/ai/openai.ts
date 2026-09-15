@@ -331,6 +331,43 @@ export async function writeAdCopy(model: string, brief: AdCopyBrief): Promise<Ad
   return variantsSchema.parse(readJsonOutput(response)).variants;
 }
 
+const LEAD_FORM_INSTRUCTIONS = [
+  "Eres especialista en formularios instantáneos de Meta para negocios mexicanos.",
+  "Con la oferta y el cliente ideal escribe el contenido de un formulario que consiga prospectos de calidad: name es un nombre interno corto; headline es el título de bienvenida con el beneficio (máximo 60 caracteres); description dice en 1 o 2 frases qué pasa después de enviar (máximo 300); customQuestions son 0 a 2 preguntas que ayuden a calificar al prospecto, con options (2 a 5 opciones cortas) cuando convenga opción múltiple; thankYouTitle (máximo 60) y thankYouBody (máximo 300) confirman el siguiente paso.",
+  "higherIntent es true si el negocio necesita prospectos muy calificados (servicios caros o con cita) y false si importa más el volumen. reason explica en una frase por qué.",
+  "No inventes precios, promociones ni plazos que no estén en los datos. No pidas datos sensibles. Español de México.",
+  "Devuelve JSON estricto sin Markdown: {name,headline,description,customQuestions:[{label,options}],higherIntent,thankYouTitle,thankYouBody,reason}.",
+].join(" ");
+
+const leadFormSchema = z.object({
+  name: z.string().trim().min(3).max(100),
+  headline: z.string().trim().min(3).max(60),
+  description: z.string().trim().max(300),
+  customQuestions: z.array(z.object({
+    label: z.string().trim().min(3).max(120),
+    options: z.array(z.string().trim().min(1).max(60)).max(5).nullish(),
+  })).max(2).default([]),
+  higherIntent: z.boolean(),
+  thankYouTitle: z.string().trim().min(3).max(60),
+  thankYouBody: z.string().trim().min(3).max(300),
+  reason: z.string().trim().min(8).max(400),
+});
+
+export type AiLeadForm = z.infer<typeof leadFormSchema>;
+
+/** Intro, qualifying questions and thank you message for a new instant form. */
+export async function writeLeadForm(model: string, brief: { business: string; offer: string; customer: string; details: string }): Promise<AiLeadForm> {
+  const response = await openai().responses.create({
+    model,
+    store: false,
+    reasoning: REASONING,
+    max_output_tokens: 4000,
+    instructions: LEAD_FORM_INSTRUCTIONS,
+    input: JSON.stringify({ negocio: brief.business, oferta: brief.offer, cliente_ideal: brief.customer, detalles: brief.details }),
+  });
+  return leadFormSchema.parse(readJsonOutput(response));
+}
+
 export interface AdVariantBrief {
   business: string;
   objective: string;

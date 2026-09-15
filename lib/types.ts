@@ -33,6 +33,8 @@ export interface Organization {
   connected: boolean;
   report?: ReportSettings;
   funding?: AccountFunding;
+  /** Last privacy policy used for an instant form; Meta requires one on every form. */
+  privacyPolicyUrl?: string;
 }
 
 /** A Facebook Page the connected profile can advertise with. */

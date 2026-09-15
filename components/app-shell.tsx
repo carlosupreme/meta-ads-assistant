@@ -12,6 +12,7 @@ import type { Ad, AgentAction, AgentName, AudienceSpec, AutomationMode, Campaign
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, agentBriefs, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
+import { leadFormProblem, MAX_CUSTOM_QUESTIONS, parseOptions, type LeadFormInput } from "@/lib/lead-forms";
 import type { TargetingOption } from "@/lib/meta";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 import { DEFAULT_AUDIENCE, describeAudience } from "@/lib/targeting";
@@ -1200,6 +1201,101 @@ async function jpegDataUrl(blob: Blob, maxSide = 768): Promise<string> {
   return canvas.toDataURL("image/jpeg", 0.8);
 }
 
+const LEAD_FIELDS: Array<[keyof LeadFormInput["fields"], string]> = [["fullName", "Nombre completo"], ["email", "Correo"], ["phone", "Teléfono"], ["city", "Ciudad"]];
+
+type CustomQuestionDraft = { label: string; optionsText: string };
+
+/** Builds and creates an instant form on the Page without leaving the campaign creator. */
+function LeadFormBuilder({ organizationId, pageId, offer, customer, details, website, aiReady, defaultPrivacyUrl, onCreated, onCancel }: {
+  organizationId: string; pageId: string; offer: string; customer: string; details: string; website: string; aiReady: boolean; defaultPrivacyUrl?: string;
+  onCreated: (form: { id: string; name: string }) => void; onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState({
+    name: `Pulso · ${offer}`.slice(0, 100),
+    headline: offer.slice(0, 60),
+    description: "Déjanos tus datos y te contactamos para darte toda la información.",
+    fields: { fullName: true, email: true, phone: true, city: false },
+    higherIntent: false,
+    privacyPolicyUrl: defaultPrivacyUrl ?? "",
+    thankYouTitle: "¡Gracias! Recibimos tus datos",
+    thankYouBody: "Te contactaremos muy pronto.",
+    websiteUrl: website,
+  });
+  const [questions, setQuestions] = useState<CustomQuestionDraft[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [reason, setReason] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const input: LeadFormInput = {
+    ...draft,
+    websiteUrl: draft.websiteUrl.trim() || undefined,
+    customQuestions: questions.map((question) => ({ label: question.label.trim(), options: parseOptions(question.optionsText) })),
+  };
+  const problem = leadFormProblem(input);
+  const updateQuestion = (index: number, change: Partial<CustomQuestionDraft>) => setQuestions(questions.map((item, position) => position === index ? { ...item, ...change } : item));
+
+  async function suggest() {
+    setSuggesting(true); setError(null);
+    try {
+      const response = await fetch("/api/ai/lead-form", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, offer, customer, details }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "La IA no pudo sugerir el formulario.");
+      const suggestion = result.form as { name: string; headline: string; description: string; customQuestions: Array<{ label: string; options?: string[] | null }>; higherIntent: boolean; thankYouTitle: string; thankYouBody: string; reason: string };
+      setDraft((current) => ({ ...current, name: suggestion.name, headline: suggestion.headline, description: suggestion.description, higherIntent: suggestion.higherIntent, thankYouTitle: suggestion.thankYouTitle, thankYouBody: suggestion.thankYouBody }));
+      setQuestions(suggestion.customQuestions.map((question) => ({ label: question.label, optionsText: question.options?.join(", ") ?? "" })));
+      setReason(suggestion.reason);
+    } catch (suggestError) {
+      setError(suggestError instanceof Error ? suggestError.message : "La IA no pudo sugerir el formulario.");
+    } finally { setSuggesting(false); }
+  }
+
+  async function create() {
+    if (problem) return;
+    setCreating(true); setError(null);
+    try {
+      const response = await fetch("/api/meta/lead-forms", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId, ...(pageId && { pageId }), ...input }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Meta no pudo crear el formulario.");
+      onCreated(result.form);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Meta no pudo crear el formulario.");
+    } finally { setCreating(false); }
+  }
+
+  return <div className="lead-form-builder">
+    <div className="builder-head"><div><b>Nuevo formulario instantáneo</b><small>Se crea en tu Página y queda elegido para esta campaña.</small></div>{aiReady && <button type="button" className="secondary-button" onClick={suggest} disabled={suggesting || creating}>{suggesting ? <LoaderCircle className="spin" size={14}/> : <Sparkles size={14}/>} {suggesting ? "Pensando…" : "Sugerir con IA"}</button>}</div>
+    {reason && <small className="ai-reason">{reason}</small>}
+    <div className="field"><label>Nombre interno</label><input maxLength={100} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })}/></div>
+    <div className="field"><label>Título de bienvenida <span className="char-count">{draft.headline.length}/60</span></label><input maxLength={60} value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })}/></div>
+    <div className="field"><label>Descripción <small>(opcional)</small></label><textarea className="short" maxLength={300} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })}/></div>
+    <div className="field"><label>Datos que pedirá</label><div className="check-grid">{LEAD_FIELDS.map(([key, label]) => <label key={key} className={draft.fields[key] ? "checked" : ""}><input type="checkbox" checked={draft.fields[key]} onChange={(event) => setDraft({ ...draft, fields: { ...draft.fields, [key]: event.target.checked } })}/>{label}</label>)}</div><small>Meta los rellena con el perfil de la persona; solo confirma y envía.</small></div>
+    <div className="field"><label>Preguntas para calificar <small>(opcional, hasta {MAX_CUSTOM_QUESTIONS})</small></label>
+      {questions.map((question, index) => <div className="custom-question" key={index}>
+        <input maxLength={120} placeholder="Ej. ¿Para cuántas personas es?" value={question.label} onChange={(event) => updateQuestion(index, { label: event.target.value })}/>
+        <input maxLength={300} placeholder="Opciones separadas por coma (vacío = respuesta libre)" value={question.optionsText} onChange={(event) => updateQuestion(index, { optionsText: event.target.value })}/>
+        <button type="button" className="icon-plain" aria-label="Quitar pregunta" onClick={() => setQuestions(questions.filter((_, position) => position !== index))}><X size={15}/></button>
+      </div>)}
+      {questions.length < MAX_CUSTOM_QUESTIONS && <button type="button" className="text-button" onClick={() => setQuestions([...questions, { label: "", optionsText: "" }])}><Plus size={14}/> Agregar pregunta</button>}
+    </div>
+    <div className="field"><label>Tipo de formulario</label><div className="choice-row">
+      <button type="button" className={draft.higherIntent ? "" : "selected"} onClick={() => setDraft({ ...draft, higherIntent: false })}>Más volumen</button>
+      <button type="button" className={draft.higherIntent ? "selected" : ""} onClick={() => setDraft({ ...draft, higherIntent: true })}>Mayor intención</button>
+    </div><small>{draft.higherIntent ? "Agrega un paso para revisar los datos antes de enviar: menos prospectos, pero más interesados." : "Se envía en segundos: más prospectos, algunos menos interesados."}</small></div>
+    <div className="field"><label>Aviso de privacidad</label><input type="url" maxLength={500} placeholder="https://tusitio.mx/aviso-de-privacidad" value={draft.privacyPolicyUrl} onChange={(event) => setDraft({ ...draft, privacyPolicyUrl: event.target.value })}/><small>Meta lo exige en todo formulario. Pulso lo recordará para los siguientes.</small></div>
+    <div className="field-row">
+      <div className="field"><label>Título de agradecimiento</label><input maxLength={60} value={draft.thankYouTitle} onChange={(event) => setDraft({ ...draft, thankYouTitle: event.target.value })}/></div>
+      <div className="field"><label>Sitio web <small>(opcional)</small></label><input type="url" maxLength={500} placeholder="https://tusitio.mx" value={draft.websiteUrl} onChange={(event) => setDraft({ ...draft, websiteUrl: event.target.value })}/></div>
+    </div>
+    <div className="field"><label>Mensaje de agradecimiento</label><textarea className="short" maxLength={300} value={draft.thankYouBody} onChange={(event) => setDraft({ ...draft, thankYouBody: event.target.value })}/></div>
+    {(error || problem) && <p className={`field-note ${error ? "warning" : ""}`}>{error ?? problem}</p>}
+    <div className="builder-actions"><button type="button" className="text-button" onClick={onCancel} disabled={creating}>Cancelar</button><button type="button" className="primary-button" onClick={create} disabled={Boolean(problem) || creating}>{creating ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} {creating ? "Creando en Meta…" : "Crear formulario"}</button></div>
+  </div>;
+}
+
 type PickerItem = { id: string; name: string; detail?: string };
 
 function TargetingPicker({ organizationId, kind, connected, selected, onAdd, onRemove }: {
@@ -1261,6 +1357,7 @@ function CampaignModal({ organization, pages, connected, defaultPublish, aiReady
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [leadForms, setLeadForms] = useState<{ forms: Array<{ id: string; name: string }>; reason?: string } | null>(null);
+  const [buildingForm, setBuildingForm] = useState(false);
   const choosePages = connected && pages.length > 0;
   const selectedPage = pages.find((page) => page.id === form.pageId);
   const estimatedMonth = form.dailyBudget * 30;
@@ -1436,8 +1533,20 @@ function CampaignModal({ organization, pages, connected, defaultPublish, aiReady
         {form.objective === "Prospectos" && <div className="field"><label>Formulario instantáneo</label>
           {!connected ? <p className="field-note">En modo demo el formulario se simula. Con Meta conectado elegirás uno de tu Página.</p>
             : !leadForms ? <p className="field-note"><LoaderCircle className="spin" size={13}/> Cargando formularios de tu Página…</p>
-              : leadForms.forms.length ? <select value={form.leadFormId} onChange={(e) => setForm({ ...form, leadFormId: e.target.value })}><option value="">Elige un formulario</option>{leadForms.forms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                : <p className="field-note warning">{leadForms.reason || "Tu Página no tiene formularios activos. Crea uno en Meta Business Suite → Formularios instantáneos."}</p>}
+              : buildingForm
+                ? <LeadFormBuilder organizationId={organization.id} pageId={form.pageId || organization.pageId || ""} offer={brief.offer} customer={plan?.plan.customerProfile || brief.customer} details={brief.details} website={brief.website} aiReady={aiReady} defaultPrivacyUrl={organization.privacyPolicyUrl}
+                  onCancel={() => setBuildingForm(false)}
+                  onCreated={(created) => {
+                    setLeadForms((current) => ({ forms: [created, ...(current?.forms ?? []).filter((item) => item.id !== created.id)] }));
+                    setForm((current) => ({ ...current, leadFormId: created.id }));
+                    setBuildingForm(false);
+                  }}/>
+                : <div className="lead-form-picker">
+                  {leadForms.forms.length > 0
+                    ? <select value={form.leadFormId} onChange={(e) => setForm({ ...form, leadFormId: e.target.value })}><option value="">Elige un formulario</option>{leadForms.forms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                    : <p className={`field-note ${leadForms.reason ? "warning" : ""}`}>{leadForms.reason || "Tu Página aún no tiene formularios activos. Crea uno aquí en un par de minutos."}</p>}
+                  <button type="button" className="text-button" onClick={() => setBuildingForm(true)}><Plus size={14}/> Crear formulario nuevo</button>
+                </div>}
         </div>}
         {form.objective === "Mensajes" && <div className="field"><label>¿Dónde recibirás los mensajes?</label><div className="choice-row">{(["WHATSAPP", "MESSENGER"] as const).map((app) => <button key={app} type="button" className={form.messagingApp === app ? "selected" : ""} onClick={() => setForm({ ...form, messagingApp: app })}><MessageCircle size={16}/>{app === "WHATSAPP" ? "WhatsApp" : "Messenger"}</button>)}</div><small>{form.messagingApp === "WHATSAPP" ? "Tu Página necesita un número de WhatsApp Business vinculado." : "Los mensajes llegan a la bandeja de tu Página."}</small></div>}
 

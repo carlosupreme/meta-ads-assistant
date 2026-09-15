@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
+import { buildLeadFormParams, type LeadFormInput } from "./lead-forms";
 import { adSetName, buildTargeting } from "./targeting";
 import type { AccountFunding, Ad, AdSetBudget, AudienceSpec, Campaign, ManagedPage, MetricPoint, Organization, TargetInterest, TargetLocation, WorkspaceData } from "./types";
 import { campaignPageIds, defaultPageFor, mergePages, pageIdFromCreative, parseAvailableBalance } from "./workspace";
@@ -416,6 +417,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
       monthlyLimit: previous?.monthlyLimit || 50000,
       targetRoas: previous?.targetRoas,
       report: previous?.report,
+      privacyPolicyUrl: previous?.privacyPolicyUrl,
       spentThisMonth: totalSpend,
       revenueThisMonth: totalRevenue,
       resultValue,
@@ -672,12 +674,24 @@ export interface LeadForm {
   name: string;
 }
 
-/** Active instant forms of a Page. Reading them needs a Page token, granted through pages_manage_ads. */
-export async function listLeadForms(encryptedToken: string, pageId: string): Promise<LeadForm[]> {
-  const token = decryptSecret(encryptedToken);
+/** Token of a Page the profile manages; instant forms are read and created with it (pages_manage_ads). */
+async function pageAccessToken(token: string, pageId: string): Promise<string> {
   const page = await graphGet<{ access_token?: string }>(pageId, token, { fields: "access_token" });
   if (!page.access_token) throw new Error("No tienes permiso para administrar anuncios de esta Página. Vuelve a conectar Meta.");
-  const forms = await graphGetAll<{ id: string; name: string; status?: string }>(`${pageId}/leadgen_forms`, page.access_token, {
+  return page.access_token;
+}
+
+/** Creates an instant form on the Page, ready to use in a lead campaign. */
+export async function createLeadForm(encryptedToken: string, pageId: string, input: LeadFormInput): Promise<LeadForm> {
+  const pageToken = await pageAccessToken(decryptSecret(encryptedToken), pageId);
+  const created = await graphPost<{ id: string }>(`${pageId}/leadgen_forms`, pageToken, buildLeadFormParams(input));
+  return { id: created.id, name: input.name.trim() };
+}
+
+/** Active instant forms of a Page. */
+export async function listLeadForms(encryptedToken: string, pageId: string): Promise<LeadForm[]> {
+  const pageToken = await pageAccessToken(decryptSecret(encryptedToken), pageId);
+  const forms = await graphGetAll<{ id: string; name: string; status?: string }>(`${pageId}/leadgen_forms`, pageToken, {
     fields: "id,name,status",
     limit: "100",
   });

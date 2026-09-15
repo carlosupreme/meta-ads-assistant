@@ -130,6 +130,7 @@ export function mergeSyncedWorkspace(current: WorkspaceData, synced: WorkspaceDa
         resultValue: local.resultValue,
         objective: local.objective,
         report: local.report,
+        privacyPolicyUrl: local.privacyPolicyUrl,
         ...(localPage && pageFields(localPage)),
       };
     }),
