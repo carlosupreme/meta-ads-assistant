@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { demoData } from "../lib/demo-data.ts";
 import type { Campaign, ManagedPage, Organization, WorkspaceData } from "../lib/types.ts";
-import { applyMetaConnection, defaultPageFor, mergePages, mergeSyncedWorkspace, parseAvailableBalance } from "../lib/workspace.ts";
+import {
+  applyMetaConnection, campaignPageIds, defaultPageFor, mergePages, mergeSyncedWorkspace, pageIdFromCreative, parseAvailableBalance,
+} from "../lib/workspace.ts";
 
 const connection: WorkspaceData["metaConnection"] = {
   status: "connected", userName: "Dueño", connectedAt: "2026-09-13T12:00:00.000Z", lastSyncAt: "2026-09-13T12:00:00.000Z", encryptedAccessToken: "token",
@@ -111,6 +113,26 @@ describe("pages", () => {
     assert.equal(next.organizations[0].pageId, "p3");
     assert.equal(next.organizations[0].instagramHandle, "@magana");
     assert.equal(next.pages?.length, 3);
+  });
+});
+
+describe("campaign pages", () => {
+  it("reads the Page from the story spec or from a boosted post id", () => {
+    assert.equal(pageIdFromCreative("p1", "p9_555"), "p1");
+    assert.equal(pageIdFromCreative(undefined, "p7_123456"), "p7");
+    assert.equal(pageIdFromCreative(undefined, undefined), undefined);
+  });
+
+  it("lists each Page a campaign's ads use once", () => {
+    const ads = [
+      { campaignId: "c1", pageId: "p7" },
+      { campaignId: "c1", pageId: "p7" },
+      { campaignId: "c1", pageId: "p3" },
+      { campaignId: "c2", pageId: "p1" },
+      { campaignId: "c1" },
+    ];
+    assert.deepEqual(campaignPageIds(ads, "c1"), ["p7", "p3"]);
+    assert.deepEqual(campaignPageIds(ads, "c3"), []);
   });
 });
 

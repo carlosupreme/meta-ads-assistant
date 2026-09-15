@@ -1,5 +1,15 @@
 // Pure workspace transitions for Meta connection and sync. Type-only imports so it runs under `node --test`.
-import type { ManagedPage, Organization, WorkspaceData } from "./types";
+import type { Ad, ManagedPage, Organization, WorkspaceData } from "./types";
+
+/** Page an ad publishes for: its story spec Page, or the Page part of a boosted post id ("pageId_postId"). */
+export function pageIdFromCreative(specPageId: string | undefined, effectiveObjectStoryId: string | undefined): string | undefined {
+  return specPageId || effectiveObjectStoryId?.split("_")[0] || undefined;
+}
+
+/** Distinct Pages used by a campaign's ads, in order of first appearance. */
+export function campaignPageIds(ads: Array<Pick<Ad, "campaignId" | "pageId">>, campaignId: string): string[] {
+  return [...new Set(ads.flatMap((ad) => ad.campaignId === campaignId && ad.pageId ? [ad.pageId] : []))];
+}
 
 type PageFields = Pick<Organization, "pageId" | "pageName" | "instagramAccountId" | "instagramHandle">;
 

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
 import type { AccountFunding, Ad, AdSetBudget, Campaign, ManagedPage, MetricPoint, Organization, WorkspaceData } from "./types";
-import { defaultPageFor, mergePages, parseAvailableBalance } from "./workspace";
+import { campaignPageIds, defaultPageFor, mergePages, pageIdFromCreative, parseAvailableBalance } from "./workspace";
 
 const version = process.env.META_GRAPH_VERSION || "v26.0";
 const graphBase = `https://graph.facebook.com/${version}`;
@@ -160,6 +160,8 @@ interface MetaAd {
   campaign_id: string;
   creative?: {
     id: string;
+    /** "pageId_postId" for boosted posts, which have no object_story_spec. */
+    effective_object_story_id?: string;
     object_story_spec?: {
       page_id?: string;
       link_data?: { link?: string; message?: string; name?: string; image_hash?: string };
@@ -292,7 +294,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
         limit: "200",
       }),
       graphGetAll<MetaAd>(`${account.id}/ads`, token, {
-        fields: "id,name,effective_status,adset_id,campaign_id,creative{id,object_story_spec}",
+        fields: "id,name,effective_status,adset_id,campaign_id,creative{id,object_story_spec,effective_object_story_id}",
         limit: "200",
       }),
       graphGetAll<MetaAdInsight>(`${account.id}/insights`, token, {
@@ -364,7 +366,13 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
         results,
         revenue: purchaseValue(insight?.action_values) || results * resultValue,
         creative: adCreativeFrom(ad.creative),
+        pageId: pageIdFromCreative(ad.creative?.object_story_spec?.page_id, ad.creative?.effective_object_story_id),
       });
+    }
+
+    // One ad account often runs campaigns for several Pages; each campaign lists the Pages its ads use.
+    for (const campaign of actualCampaigns) {
+      if (campaign.organizationId === organizationId) campaign.pageIds = campaignPageIds(actualAds, campaign.id);
     }
 
     actualOrganizations.push({

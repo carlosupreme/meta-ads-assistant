@@ -253,7 +253,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
 
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
-    campaigns: <CampaignsView campaigns={campaigns} ads={ads} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
+    campaigns: <CampaignsView campaigns={campaigns} ads={ads} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
     agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
@@ -470,7 +470,7 @@ function PanelHeader({ title, subtitle, action }: { title: string; subtitle: str
 type ControlRequest = (body: Record<string, unknown>) => Promise<boolean>;
 type AdCreatedHandler = (workspace: SafeWorkspace, message: string) => void;
 
-function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl, onAdCreated }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler }) {
+function CampaignTable({ campaigns, compact = false, onToggle, ads, pageNames, onControl, onAdCreated }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; pageNames?: Map<string, string>; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   if (!campaigns.length) return <div className="empty-panel"><Megaphone size={24}/><b>Aún no hay campañas</b><span>Crea la primera con ayuda de los agentes.</span></div>;
   return <div className={`campaign-table ${compact ? "compact" : ""}`}>
@@ -482,7 +482,7 @@ function CampaignTable({ campaigns, compact = false, onToggle, ads, onControl, o
         <div className={`campaign-row ${open ? "expanded" : ""}`}>
           <div className="campaign-name">
             {ads && <button className="expand-button" aria-expanded={open} title={open ? "Ocultar anuncios" : "Ver anuncios"} onClick={() => setExpanded(open ? null : campaign.id)}><ChevronRight size={15}/></button>}
-            <span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{campaign.channel}</small></p>
+            <span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{pageNames && (campaign.pageIds?.length ?? 0) > 0 ? campaign.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ") : campaign.channel}</small></p>
           </div>
           <div><span className={`status-badge ${campaign.status.toLowerCase()}`}><i />{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span></div>
           <div className="number-cell"><b>{money(campaign.spend)}</b><small>este mes</small></div>
@@ -633,13 +633,23 @@ function ActivityList({ activities }: { activities: SafeWorkspace["activities"] 
   }) : <div className="empty-panel"><Activity size={22}/><b>Sin actividad reciente</b></div>}</div>;
 }
 
-function CampaignsView({ campaigns, ads, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
+function CampaignsView({ campaigns, ads, pages, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; pages: ManagedPage[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
   const [query, setQuery] = useState("");
-  const filtered = campaigns.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
+  const [pageFilter, setPageFilter] = useState("all");
+  const pageNames = new Map(pages.map((page) => [page.id, page.name]));
+  const withoutPage = campaigns.filter((campaign) => !campaign.pageIds?.length);
+  const byPage = pageFilter === "all" ? campaigns
+    : pageFilter === "none" ? withoutPage
+      : campaigns.filter((campaign) => campaign.pageIds?.includes(pageFilter));
+  const filtered = byPage.filter((campaign) => campaign.name.toLowerCase().includes(query.toLowerCase()));
   return <div className="page-stack">
     <div className="page-intro"><div><h2>Todas tus campañas</h2><p>Supervisa resultados y deja que Pulso optimice la inversión.</p></div><button className="primary-button" onClick={onCreate}><WandSparkles size={17}/> Crear con IA</button></div>
-    <div className="summary-strip"><div><span>Campañas</span><b>{campaigns.length}</b></div><div><span>Activas</span><b className="green-text">{campaigns.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(campaigns.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(campaigns.reduce((sum, c) => sum + c.roas, 0) / Math.max(campaigns.length, 1)).toFixed(2)}×</b></div></div>
-    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div><button className="secondary-button"><SlidersHorizontal size={15}/> Filtros</button><button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} onToggle={onToggle} onControl={onControl} onAdCreated={onAdCreated}/></div>
+    <div className="summary-strip"><div><span>Campañas</span><b>{byPage.length}</b></div><div><span>Activas</span><b className="green-text">{byPage.filter((c) => c.status === "ACTIVE").length}</b></div><div><span>Inversión total</span><b>{money(byPage.reduce((sum, c) => sum + c.spend, 0))}</b></div><div><span>ROAS promedio</span><b>{(byPage.reduce((sum, c) => sum + c.roas, 0) / Math.max(byPage.length, 1)).toFixed(2)}×</b></div></div>
+    <div className="panel full-table-panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input placeholder="Buscar campaña…" value={query} onChange={(event) => setQuery(event.target.value)}/></div>{pages.length > 0 && <select className="page-filter" aria-label="Filtrar por página" value={pageFilter} onChange={(event) => setPageFilter(event.target.value)}>
+      <option value="all">Todas las páginas ({campaigns.length})</option>
+      {pages.map((page) => <option key={page.id} value={page.id}>{page.name} ({campaigns.filter((campaign) => campaign.pageIds?.includes(page.id)).length})</option>)}
+      {withoutPage.length > 0 && <option value="none">Sin página detectada ({withoutPage.length})</option>}
+    </select>}<button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} pageNames={pageNames} onToggle={onToggle} onControl={onControl} onAdCreated={onAdCreated}/></div>
   </div>;
 }
 

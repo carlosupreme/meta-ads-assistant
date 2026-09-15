@@ -105,6 +105,7 @@ export async function POST(request: Request) {
       roas: 0,
       trend: 0,
       dailyBudget: input.dailyBudget,
+      ...(publisher.pageId && { pageIds: [publisher.pageId] }),
       // Meta holds the budget on the ad set; recording it lets the agents manage it before the next sync.
       ...(adSetId && { budgetLevel: "adset" as const, adSets: [{ id: adSetId, name: AD_SET_NAME, status: adSetStatus, dailyBudget: input.dailyBudget }] }),
       updatedAt: "Ahora",

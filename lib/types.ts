@@ -88,6 +88,8 @@ export interface Campaign {
   /** Where Meta holds the daily budget. "none" means lifetime budget: agents do not touch it. */
   budgetLevel?: "campaign" | "adset" | "none";
   adSets?: AdSetBudget[];
+  /** Pages its ads publish for; one ad account can run campaigns for several Pages. */
+  pageIds?: string[];
   updatedAt: string;
 }
 
@@ -113,6 +115,8 @@ export interface Ad {
   results: number;
   revenue: number;
   creative?: AdCreative;
+  /** Page the ad publishes for. */
+  pageId?: string;
 }
 
 /** Copy and story spec of an ad, kept so new variants can reuse its image and destination. */

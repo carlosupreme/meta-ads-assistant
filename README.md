@@ -140,6 +140,7 @@ El monitor se ejecuta con `GET /api/cron/monitor` y `Authorization: Bearer $CRON
 En **Campañas** se administra todo sin abrir el Administrador de anuncios:
 
 - **Estado de campañas**: pausa o reactiva con el botón de cada fila.
+- **Filtro por página**: una cuenta publicitaria suele tener campañas de varias Páginas (incluidas publicaciones promocionadas). La sincronización detecta la Página de cada anuncio, por su creativo o por el id de la publicación, y la tabla permite filtrar por cualquiera de las Páginas que administra el perfil; cada campaña muestra sus Páginas bajo el nombre.
 - **Anuncios**: la flecha de cada campaña muestra sus anuncios con gasto, CTR, frecuencia y resultados de 7 días, y permite pausarlos o reactivarlos.
 - **Presupuesto diario**: haz clic en el monto para editarlo. Con presupuesto por conjunto, el cambio se reparte proporcionalmente.
 
