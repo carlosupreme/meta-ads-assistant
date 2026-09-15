@@ -8,7 +8,7 @@ import {
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
   Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { Ad, AgentAction, AutomationMode, Campaign, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
+import type { Ad, AgentAction, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization } from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
@@ -254,7 +254,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const pageContent: Record<NavView, React.ReactNode> = {
     dashboard: <DashboardView organization={organization} campaigns={campaigns} activities={activities} alerts={alerts} actions={actions} metrics={metrics} summary={weekSummary} onRun={runAnalysis} running={running} onNavigate={setView} />,
     campaigns: <CampaignsView campaigns={campaigns} ads={ads} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
-    agents: <AgentsView organization={organization} activities={activities} actions={actions} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
+    agents: <AgentsView organization={organization} activities={activities} actions={actions} reviews={data.campaignReviews?.[organization.id]} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={runAnalysis} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
@@ -653,7 +653,51 @@ function CampaignsView({ campaigns, ads, pages, onToggle, onControl, onAdCreated
   </div>;
 }
 
-function AgentsView({ organization, activities, actions, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
+const VERDICTS: Record<CampaignVerdict, { label: string; tone: string }> = {
+  attention: { label: "Atención", tone: "danger" },
+  watch: { label: "Vigilar", tone: "warn" },
+  learning: { label: "Aprendiendo", tone: "info" },
+  no_data: { label: "Sin datos", tone: "muted" },
+  good: { label: "En meta", tone: "good" },
+  excellent: { label: "Excelente", tone: "great" },
+  paused: { label: "Pausada", tone: "muted" },
+  draft: { label: "Borrador", tone: "muted" },
+};
+
+function CampaignReviewsPanel({ review, pages, running, onRun }: { review?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; running: boolean; onRun: () => void }) {
+  const [verdictFilter, setVerdictFilter] = useState<"all" | CampaignVerdict>("all");
+  if (!review) {
+    return <div className="panel reviews-panel">
+      <PanelHeader title="Revisión por campaña" subtitle="Cada análisis deja un diagnóstico de todas tus campañas, también de las que van bien"/>
+      <div className="empty-panel"><Activity size={22}/><b>Aún no hay revisión</b><button className="primary-button" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={15}/> : <Sparkles size={15}/>} Ejecutar análisis</button></div>
+    </div>;
+  }
+  const pageNames = new Map(pages.map((page) => [page.id, page.name]));
+  const counts = review.items.reduce<Partial<Record<CampaignVerdict, number>>>((all, item) => ({ ...all, [item.verdict]: (all[item.verdict] ?? 0) + 1 }), {});
+  const items = verdictFilter === "all" ? review.items : review.items.filter((item) => item.verdict === verdictFilter);
+  return <div className="panel reviews-panel">
+    <PanelHeader
+      title="Revisión por campaña"
+      subtitle={`Último análisis ${timeAgo(review.at).toLowerCase()} · ${review.items.length} ${review.items.length === 1 ? "campaña" : "campañas"}`}
+      action={<select className="page-filter" aria-label="Filtrar por veredicto" value={verdictFilter} onChange={(event) => setVerdictFilter(event.target.value as "all" | CampaignVerdict)}>
+        <option value="all">Todas ({review.items.length})</option>
+        {(Object.keys(VERDICTS) as CampaignVerdict[]).filter((verdict) => counts[verdict]).map((verdict) => <option key={verdict} value={verdict}>{VERDICTS[verdict].label} ({counts[verdict]})</option>)}
+      </select>}
+    />
+    <div className="review-list">{items.map((item) => <div className="review-row" key={item.campaignId}>
+      <span className={`verdict-badge ${VERDICTS[item.verdict].tone}`}>{VERDICTS[item.verdict].label}</span>
+      <div>
+        <strong>{item.campaignName}</strong>
+        {(item.pageIds?.length ?? 0) > 0 && <small>{item.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ")}</small>}
+        <b className="review-title">{item.title}</b>
+        <p>{item.detail}</p>
+      </div>
+      <div className="review-metrics"><span>{money(item.spend)}</span><small>{item.results} resultados · {item.roas.toFixed(2)}×</small><small>{money(item.dailyBudget)}/día</small></div>
+    </div>)}</div>
+  </div>;
+}
+
+function AgentsView({ organization, activities, actions, reviews, pages, decidingId, onDecide, running, onRun, onMode, aiStatus }: { organization: Organization; activities: SafeWorkspace["activities"]; actions: AgentAction[]; reviews?: { at: string; items: CampaignReview[] }; pages: ManagedPage[]; decidingId: string | null; onDecide: (id: string, decision: Decision) => void; running: boolean; onRun: () => void; onMode: () => void; aiStatus: AiStatus | null }) {
   const modeHint: Record<AutomationMode, string> = {
     observer: "Modo Observador: los agentes solo sugieren cambios.",
     copilot: "Modo Copiloto: cada cambio espera tu aprobación.",
@@ -663,6 +707,7 @@ function AgentsView({ organization, activities, actions, decidingId, onDecide, r
   return <div className="page-stack">
     <div className="agent-hero"><div className="agent-hero-icon"><BrainCircuit size={27}/></div><div><span>PILOTO AUTOMÁTICO · {aiStatus?.configured ? `OPENAI · ${aiStatus.model?.toUpperCase()}` : "MOTOR DE REGLAS"}</span><h2>Tu equipo de medios, trabajando 24/7</h2><p>{modeHint[organization.mode]}</p></div><div className="hero-controls"><button className={`mode-chip ${organization.mode}`} onClick={onMode}><span/><b>{MODE_LABELS[organization.mode]}</b><ChevronDown size={15}/></button><button className="run-button light" onClick={onRun} disabled={running}>{running ? <LoaderCircle className="spin" size={17}/> : <Sparkles size={17}/>} Ejecutar análisis</button></div></div>
     <div className="agents-actions"><ApprovalsPanel actions={actions} decidingId={decidingId} onDecide={onDecide}/><ActionLog actions={actions} decidingId={decidingId} onDecide={onDecide}/></div>
+    <CampaignReviewsPanel key={organization.id} review={reviews} pages={pages} running={running} onRun={onRun}/>
     <AiAssistantPanel organization={organization} status={aiStatus}/>
     <div className="section-title"><div><h3>Equipo de agentes</h3><p>Todos comparten las métricas de la cuenta y reportan al Supervisor.</p></div><span className="live-label"><i/> 6 OPERANDO</span></div>
     <div className="agents-grid">{Object.entries(agentMeta).map(([name, meta]) => { const Icon = meta.icon; const last = actions.find((action) => action.agent === name); return <div className="agent-card" key={name}><div className="agent-card-top"><span className={`agent-big-icon ${meta.color}`}><Icon size={21}/></span><span className="agent-status"><i/> ACTIVO</span></div><h3>{name}</h3><p>{meta.description}</p><div className="agent-stat"><span>Última decisión</span><b suppressHydrationWarning>{last ? timeAgo(last.createdAt) : "Sin decisiones"}</b></div><button>Ver decisiones <ChevronRight size={14}/></button></div>; })}</div>

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   actionsFromAi, buildVariantSpec, checkGuardrails, commitAgentRun, creativeRefreshTargets, lastStatusChanges, monitoringSummary, planRuleActions,
-  projectedMonthSpend, recordAction, resolveProposals,
+  projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns,
 } from "../lib/optimizer.ts";
 import type { Ad, AgentAction, Campaign, Organization, WorkspaceData } from "../lib/types.ts";
 
@@ -273,6 +273,41 @@ describe("monitoring", () => {
     const old = { date: "2026-07-01", runs: 5, campaignsChecked: 1, adsChecked: 1, anomalies: 0, blocked: 0, executed: 0, lastRunAt: "2026-07-01T00:00:00.000Z" };
     const next = commitAgentRun(workspace({ monitoring: { org: [old] } }), run(), now);
     assert.deepEqual(next.monitoring?.org.map((day) => day.date), [now.toISOString().slice(0, 10)]);
+  });
+});
+
+describe("campaign reviews", () => {
+  it("gives every campaign a verdict, good results included, problems first", () => {
+    const campaigns = [
+      campaign({ id: "great", roas: 4 }),
+      campaign({ id: "ok", roas: 3.1 }),
+      campaign({ id: "low", roas: 2 }),
+      campaign({ id: "new", spend: 500 }),
+      campaign({ id: "off", status: "PAUSED" }),
+    ];
+    const reviews = reviewCampaigns(workspace({ campaigns }), organization(), [], now);
+    const verdictOf = (id: string) => reviews.find((review) => review.campaignId === id)?.verdict;
+    assert.equal(reviews.length, 5);
+    assert.equal(verdictOf("great"), "excellent");
+    assert.equal(verdictOf("ok"), "good");
+    assert.equal(verdictOf("low"), "attention");
+    assert.equal(verdictOf("new"), "learning");
+    assert.equal(verdictOf("off"), "paused");
+    assert.equal(reviews[0].campaignId, "low");
+  });
+
+  it("explains the action taken on a campaign in this analysis", () => {
+    const pending = budgetAction({ status: "pending", type: "decrease_budget", toBudget: 800 });
+    const [review] = reviewCampaigns(workspace(), organization(), [pending], now);
+    assert.equal(review.verdict, "attention");
+    assert.match(review.title, /Espera tu aprobación/);
+  });
+
+  it("keeps the latest review per business when a run is committed", () => {
+    const items = reviewCampaigns(workspace(), organization(), [], now);
+    const next = commitAgentRun(workspace(), { actions: [], insights: [], reviews: [{ organizationId: "org", items }] }, now);
+    assert.equal(next.campaignReviews?.org.items.length, 1);
+    assert.equal(next.campaignReviews?.org.at, now.toISOString());
   });
 });
 

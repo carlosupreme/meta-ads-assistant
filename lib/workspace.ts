@@ -67,6 +67,7 @@ export function clearDemoData(workspace: WorkspaceData): WorkspaceData {
     creatives: [],
     actions: [],
     budgetChanges: [],
+    campaignReviews: {},
   };
 }
 

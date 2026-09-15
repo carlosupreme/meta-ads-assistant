@@ -214,6 +214,23 @@ export interface MonitoringDay {
   lastRunAt: string;
 }
 
+export type CampaignVerdict = "attention" | "watch" | "learning" | "no_data" | "good" | "excellent" | "paused" | "draft";
+
+/** One message per campaign after an analysis, so every campaign gets a verdict even when nothing changes. */
+export interface CampaignReview {
+  campaignId: string;
+  campaignName: string;
+  pageIds?: string[];
+  verdict: CampaignVerdict;
+  title: string;
+  detail: string;
+  spend: number;
+  results: number;
+  roas: number;
+  costPerResult: number;
+  dailyBudget: number;
+}
+
 export interface MetricPoint {
   date: string;
   spend: number;
@@ -276,6 +293,8 @@ export interface WorkspaceData {
   budgetChanges: BudgetChange[];
   /** Per business id, the last weeks of monitoring activity. */
   monitoring?: Record<string, MonitoringDay[]>;
+  /** Per business id, the per-campaign review of the latest analysis. */
+  campaignReviews?: Record<string, { at: string; items: CampaignReview[] }>;
   /** OpenAI model chosen by the workspace owner; generative AI stays off until one is picked. */
   aiModel?: string;
   branding?: Branding;

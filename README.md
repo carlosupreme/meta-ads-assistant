@@ -175,6 +175,21 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 - Si Meta rechaza el conjunto, el creativo o el anuncio, Pulso borra la campaña vacía que alcanzó a crear y muestra la explicación de Meta (por ejemplo, que la Página no tiene WhatsApp Business vinculado). Si solo falla la activación, todo queda en pausa para evitar gasto accidental.
 - Los formularios instantáneos se leen con el permiso `pages_manage_ads`. Si conectaste Meta antes de este cambio, desconecta y vuelve a conectar para otorgarlo.
 
+## Revisión por campaña
+
+Cada análisis (manual o del monitor) deja en **Agentes IA → Revisión por campaña** un veredicto y un mensaje para **todas** las campañas del negocio, también las que van bien, ordenadas con los problemas primero y filtrables por veredicto:
+
+| Veredicto | Cuándo |
+| --- | --- |
+| Atención | ROAS bajo 80% de la meta (o costo por resultado 50% sobre el promedio), gasto sin resultados o una reducción/pausa en este análisis |
+| Vigilar | Ligeramente bajo la meta, o un cambio frenado por los límites |
+| Aprendiendo | Todavía no junta dos días de presupuesto |
+| Sin datos | No ha gastado |
+| En meta / Excelente | En meta, o 20% por encima y candidata a escalar |
+| Pausada / Borrador | Sin evaluación mientras no entregue; indica si la pausó Pulso y cuándo se reactivaría |
+
+Cada mensaje incluye la métrica contra la meta, anuncios con frecuencia alta y, si hubo, la acción de ese análisis con su estado. Se guarda solo la revisión más reciente por negocio, así los ciclos horarios no llenan el registro de actividad.
+
 ## Trabajo visible
 
 Cada ciclo registra, por negocio y por día, cuántas veces se revisó la cuenta, cuántas campañas y anuncios activos se vigilaron, las verificaciones del ritmo de gasto contra el límite mensual, las señales de riesgo (fatiga, gasto sin resultados, bajo rendimiento o ritmo excedido) y los cambios aplicados o frenados. Se guardan cinco semanas.

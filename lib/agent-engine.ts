@@ -2,7 +2,7 @@ import { createAdVariant, updateMetaObject } from "./meta";
 import type { AgentAction, AgentActivity, WorkspaceData } from "./types";
 import { aiStatus, analyzeCampaigns, buildAiContext, writeAdVariants } from "./ai/openai";
 import {
-  actionsFromAi, buildVariantSpec, creativeRefreshTargets, planRuleActions, resolveProposals, scaledAdSetBudget, summarizeRun,
+  actionsFromAi, buildVariantSpec, creativeRefreshTargets, planRuleActions, resolveProposals, reviewCampaigns, scaledAdSetBudget, summarizeRun,
   type AgentRunOutcome, type RunCheck,
 } from "./optimizer";
 
@@ -23,6 +23,7 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
   const actions: AgentAction[] = [];
   const insights: AgentActivity[] = [];
   const checks: RunCheck[] = [];
+  const reviews: NonNullable<AgentRunOutcome["reviews"]> = [];
   let aiHeadline: string | undefined;
 
   for (const organization of organizations) {
@@ -88,6 +89,10 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
     for (const action of resolveProposals(workspace, organization, proposals, now)) {
       actions.push(action.status === "executing" ? await executeAction(workspace, action, now) : action);
     }
+    reviews.push({
+      organizationId: organization.id,
+      items: reviewCampaigns(workspace, organization, actions.filter((action) => action.organizationId === organization.id), now),
+    });
     checks.push({
       organizationId: organization.id,
       campaignsChecked: campaigns.filter((campaign) => campaign.status === "ACTIVE").length,
@@ -95,8 +100,10 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
     });
   }
 
-  const summary = summarizeRun(actions);
-  return { actions, insights, checks, summary: actions.length || !aiHeadline ? summary : aiHeadline };
+  const reviewed = reviews.reduce((sum, review) => sum + review.items.length, 0);
+  const base = actions.length || !aiHeadline ? summarizeRun(actions) : aiHeadline;
+  const summary = reviewed ? `${base} Revisé ${reviewed} ${reviewed === 1 ? "campaña" : "campañas"}; ve el detalle en Agentes IA.` : base;
+  return { actions, insights, checks, reviews, summary };
 }
 
 /** Pushes an already validated action to Meta. In demo mode the change is simulated locally. */

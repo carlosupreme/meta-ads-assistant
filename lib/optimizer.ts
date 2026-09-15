@@ -1,7 +1,8 @@
 // Pure optimization core: planning rules, hard guardrails and state transitions.
 // It only has type imports so it runs on the server, in the browser and under `node --test`.
 import type {
-  Ad, AdVariant, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, MonitoringDay, Organization, WorkspaceData,
+  Ad, AdVariant, AgentAction, AgentActionType, AgentActivity, AlertItem, AutomationMode, BudgetChange, Campaign, CampaignReview, CampaignVerdict,
+  MonitoringDay, Organization, WorkspaceData,
 } from "./types";
 import type { AiActionProposal } from "./ai/contracts";
 
@@ -645,6 +646,7 @@ export interface AgentRunOutcome {
   actions: AgentAction[];
   insights: AgentActivity[];
   checks?: RunCheck[];
+  reviews?: Array<{ organizationId: string; items: CampaignReview[] }>;
 }
 
 const FINDING_TYPES = new Set<AgentActionType>(["pause_campaign", "pause_ad", "decrease_budget"]);
@@ -703,10 +705,93 @@ export function commitAgentRun(current: WorkspaceData, run: AgentRunOutcome, now
   return {
     ...next,
     monitoring,
+    campaignReviews: run.reviews?.length
+      ? { ...next.campaignReviews, ...Object.fromEntries(run.reviews.map((review) => [review.organizationId, { at: now.toISOString(), items: review.items }])) }
+      : next.campaignReviews,
     actions: [...fresh, ...next.actions].slice(0, 300),
     activities: [...run.insights, ...fresh.map(activityFromAction), ...next.activities].slice(0, 150),
     alerts: [...alertsFromActions(fresh), ...next.alerts].slice(0, 100),
   };
+}
+
+const VERDICT_ORDER: CampaignVerdict[] = ["attention", "watch", "learning", "no_data", "good", "excellent", "paused", "draft"];
+
+const ACTION_STATE: Record<AgentAction["status"], string> = {
+  executed: "Aplicado",
+  pending: "Espera tu aprobación",
+  executing: "En curso",
+  recommended: "Recomendación",
+  blocked: "Frenado por tus límites",
+  failed: "Meta lo rechazó",
+  rejected: "Rechazado",
+  expired: "Expirado",
+};
+
+/**
+ * A verdict and a message for every campaign of a business, including the ones doing well, so the owner sees
+ * that each campaign was looked at. Campaign-level actions from this run take priority in the message.
+ */
+export function reviewCampaigns(
+  workspace: Pick<WorkspaceData, "campaigns" | "ads" | "actions">,
+  organization: Organization,
+  runActions: AgentAction[],
+  now: Date,
+): CampaignReview[] {
+  const campaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id);
+  const active = campaigns.filter((campaign) => campaign.status === "ACTIVE");
+  const target = targetRoas(organization);
+  const useValue = active.some((campaign) => campaign.revenue > 0);
+  const totalResults = active.reduce((sum, campaign) => sum + campaign.results, 0);
+  const averageCpa = totalResults ? active.reduce((sum, campaign) => sum + campaign.spend, 0) / totalResults : 0;
+  const latestStatus = lastStatusChanges(workspace.actions);
+  const campaignLevel = new Set<AgentActionType>(["increase_budget", "decrease_budget", "pause_campaign", "resume_campaign"]);
+
+  const reviews = campaigns.map((campaign): CampaignReview => {
+    const review = (verdict: CampaignVerdict, title: string, detail: string): CampaignReview => ({
+      campaignId: campaign.id, campaignName: campaign.name, pageIds: campaign.pageIds, verdict, title, detail,
+      spend: campaign.spend, results: campaign.results, roas: campaign.roas, costPerResult: campaign.costPerResult, dailyBudget: campaign.dailyBudget,
+    });
+    const own = runActions.filter((action) => action.campaignId === campaign.id);
+    const action = own.find((item) => campaignLevel.has(item.type)) ?? own[0];
+    const fatigued = workspace.ads.filter((ad) => ad.campaignId === campaign.id && ad.status === "ACTIVE" && ad.frequency >= GUARDRAILS.fatigueFrequency).length;
+    const fatigueNote = fatigued ? ` ${fatigued} ${fatigued === 1 ? "anuncio tiene" : "anuncios tienen"} frecuencia alta.` : "";
+    const performance = useValue
+      ? `ROAS de ${campaign.roas.toFixed(2)}× frente a la meta de ${target.toFixed(2)}×`
+      : campaign.results
+        ? `Costo por resultado de ${formatMoney(campaign.costPerResult)} frente a ${formatMoney(averageCpa)} de promedio`
+        : "Sin resultados registrados";
+
+    if (campaign.status === "DRAFT") return review("draft", "Borrador sin publicar", "Publícala para que Pulso pueda medirla.");
+    if (action) {
+      const verdict: CampaignVerdict = action.status === "blocked" ? "watch"
+        : action.type === "increase_budget" || action.type === "resume_campaign" ? "excellent"
+          : "attention";
+      return review(verdict, `${ACTION_STATE[action.status]}: ${describeAction(action)}`, `${action.reason}${action.guardrail ? ` ${action.guardrail}` : ""}${fatigueNote}`);
+    }
+    if (campaign.status === "PAUSED") {
+      const pause = latestStatus.get(`campaign:${campaign.id}`);
+      if (pause && pause.source !== "user" && pause.type === "pause_campaign") {
+        const resumeNote = pause.trigger === "limit" ? " Se reactivará al empezar el mes si hay margen en el límite." : "";
+        return review("paused", "Pausada por Pulso", `${pause.reason}${resumeNote}`);
+      }
+      return review("paused", "Pausada", "No se evalúa mientras esté en pausa.");
+    }
+    if (campaign.spend <= 0) return review("no_data", "Aún sin gasto", "Pulso la evaluará cuando empiece a gastar.");
+    if (!isMature(campaign)) {
+      return review("learning", "Juntando datos", `Lleva ${formatMoney(campaign.spend)} de ${formatMoney(campaign.dailyBudget * 2)} (dos días de presupuesto) para evaluarla con confianza. ${performance}.${fatigueNote}`);
+    }
+    if (!campaign.results) return review("attention", "Gasta sin resultados", `Ha invertido ${formatMoney(campaign.spend)} sin registrar resultados.${fatigueNote}`);
+    // Same bands the planner acts on: under 80% of target (or 50% over average cost) is a problem, 20% over target is a scaling candidate.
+    const ratio = useValue ? campaign.roas / target : averageCpa && campaign.costPerResult ? averageCpa / campaign.costPerResult : 1;
+    const [excellentAt, attentionBelow] = useValue ? [1.2, 0.8] : [1 / 0.75, 1 / 1.5];
+    if (ratio >= excellentAt) return review("excellent", "Rinde por encima de la meta", `${performance}. Es candidata a escalar cuando haya margen en el límite mensual.${fatigueNote}`);
+    if (ratio >= 1) return review("good", "En meta", `${performance}. No hace falta cambiar nada.${fatigueNote}`);
+    if (ratio >= attentionBelow) return review("watch", "Ligeramente bajo la meta", `${performance}. Está dentro del margen tolerado; Pulso la sigue vigilando.${fatigueNote}`);
+    return review("attention", "Bajo la meta", `${performance}.${fatigueNote}`);
+  });
+
+  void now;
+  return reviews.sort((a, b) => VERDICT_ORDER.indexOf(a.verdict) - VERDICT_ORDER.indexOf(b.verdict) || b.spend - a.spend);
 }
 
 export interface MonitoringSummary {
