@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
-import type { Ad, AdSetBudget, Campaign, MetricPoint, Organization, WorkspaceData } from "./types";
+import type { AccountFunding, Ad, AdSetBudget, Campaign, MetricPoint, Organization, WorkspaceData } from "./types";
+import { parseAvailableBalance } from "./workspace";
 
 const version = process.env.META_GRAPH_VERSION || "v26.0";
 const graphBase = `https://graph.facebook.com/${version}`;
@@ -101,6 +102,23 @@ interface MetaAdAccount {
   name: string;
   currency?: string;
   account_status?: number;
+  is_prepay_account?: boolean;
+  amount_spent?: string;
+  spend_cap?: string;
+  funding_source_details?: { display_string?: string };
+}
+
+// Meta returns amount_spent and spend_cap in the currency's minor units (cents for MXN).
+function fundingFrom(account: MetaAdAccount): AccountFunding {
+  const paymentMethod = account.funding_source_details?.display_string;
+  return {
+    prepaid: Boolean(account.is_prepay_account),
+    paymentMethod,
+    availableBalance: account.is_prepay_account ? parseAvailableBalance(paymentMethod) : undefined,
+    amountSpent: Number(account.amount_spent || 0) / 100,
+    spendCap: Number(account.spend_cap || 0) / 100,
+    syncedAt: new Date().toISOString(),
+  };
 }
 
 interface MetaPage {
@@ -200,7 +218,7 @@ export async function fetchMetaIdentity(token: string): Promise<{ id: string; na
 }
 
 export async function fetchAdAccounts(token: string): Promise<MetaAdAccount[]> {
-  return graphGetAll<MetaAdAccount>("me/adaccounts", token, { fields: "id,name,currency,account_status", limit: "100" });
+  return graphGetAll<MetaAdAccount>("me/adaccounts", token, { fields: "id,name,currency,account_status,is_prepay_account,amount_spent,spend_cap,funding_source_details", limit: "100" });
 }
 
 export async function fetchManagedPages(token: string): Promise<MetaPage[]> {
@@ -351,6 +369,7 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
       revenueThisMonth: totalRevenue,
       resultValue,
       connected: account.account_status === 1,
+      funding: fundingFrom(account),
     });
 
     actualMetrics[organizationId] = (dailyResponse.data || []).map((point) => {

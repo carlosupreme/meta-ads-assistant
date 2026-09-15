@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { demoData } from "../lib/demo-data.ts";
 import type { Campaign, Organization, WorkspaceData } from "../lib/types.ts";
-import { applyMetaConnection, mergeSyncedWorkspace } from "../lib/workspace.ts";
+import { applyMetaConnection, mergeSyncedWorkspace, parseAvailableBalance } from "../lib/workspace.ts";
 
 const connection: WorkspaceData["metaConnection"] = {
   status: "connected", userName: "Dueño", connectedAt: "2026-09-13T12:00:00.000Z", lastSyncAt: "2026-09-13T12:00:00.000Z", encryptedAccessToken: "token",
@@ -79,5 +79,17 @@ describe("Meta connection", () => {
     const report = { clientEmails: ["cliente@empresa.mx"], weeklyEmail: true };
     const current: WorkspaceData = { ...structuredClone(demoData), metaConnection: connection, organizations: [realOrganization({ report })] };
     assert.deepEqual(mergeSyncedWorkspace(current, synced()).organizations[0].report, report);
+  });
+});
+
+describe("account funding", () => {
+  it("reads the prepaid amount from Meta's funding description", () => {
+    assert.equal(parseAvailableBalance("Available Balance ($0.00 MXN)"), 0);
+    assert.equal(parseAvailableBalance("Available Balance ($1,234.50 MXN)"), 1234.5);
+  });
+
+  it("returns nothing when the description has no amount", () => {
+    assert.equal(parseAvailableBalance("Visa *1234"), undefined);
+    assert.equal(parseAvailableBalance(undefined), undefined);
   });
 });

@@ -1,6 +1,12 @@
 // Pure workspace transitions for Meta connection and sync. Type-only imports so it runs under `node --test`.
 import type { WorkspaceData } from "./types";
 
+/** Amount inside Meta's funding description, e.g. "Available Balance ($1,234.50 MXN)" → 1234.5. */
+export function parseAvailableBalance(display: string | undefined): number | undefined {
+  const match = display?.match(/\$\s?([\d,]+(?:\.\d{1,2})?)/);
+  return match ? Number(match[1].replaceAll(",", "")) : undefined;
+}
+
 /** Removes every record that came from the demo seed, keeping the owner and their preferences. */
 export function clearDemoData(workspace: WorkspaceData): WorkspaceData {
   return {

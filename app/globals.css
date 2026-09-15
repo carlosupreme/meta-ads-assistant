@@ -2075,3 +2075,15 @@ a { color: inherit; text-decoration: none; }
 .variant-card span { color: #6b6d78; font-size: 12px; line-height: 1.45; }
 .variant-copy { margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #cfc7f5; border-radius: 4px; color: #585a66; background: #faf9ff; display: flex; flex-direction: column; gap: 3px; font-size: 12px; line-height: 1.45; }
 .variant-copy b { color: #33343d; }
+
+/* Account funding */
+.funding-strip { margin-top: 10px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 11px; background: #fff; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 16px; }
+.funding-strip > svg { color: #6c54dc; }
+.funding-strip p { margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.funding-strip p b { font-size: 14px; }
+.funding-strip p span { color: #8a8c96; font-size: 12px; }
+.funding-strip > div { display: flex; flex-direction: column; align-items: flex-end; }
+.funding-strip strong { font-size: 16px; }
+.funding-strip small { color: #8a8c96; font-size: 11px; }
+.funding-strip.empty { border-color: #f2cecb; background: #fff7f6; }
+.funding-strip.empty > svg, .funding-strip.empty p b { color: #b8443e; }

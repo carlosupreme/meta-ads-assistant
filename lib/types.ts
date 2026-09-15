@@ -32,6 +32,20 @@ export interface Organization {
   resultValue: number;
   connected: boolean;
   report?: ReportSettings;
+  funding?: AccountFunding;
+}
+
+/** Funds and payment setup of the ad account, as Meta reports them on the last sync. */
+export interface AccountFunding {
+  prepaid: boolean;
+  /** Meta's own description of the payment method, e.g. "Available Balance ($0.00 MXN)". */
+  paymentMethod?: string;
+  /** Remaining prepaid funds, when Meta's description includes the amount. */
+  availableBalance?: number;
+  amountSpent: number;
+  /** 0 means the account has no spending limit. */
+  spendCap: number;
+  syncedAt: string;
 }
 
 /** Client reporting preferences for one business. */

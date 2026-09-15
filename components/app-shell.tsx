@@ -337,6 +337,21 @@ function ValueStrip({ summary, limit }: { summary: MonitoringSummary; limit: num
   </section>;
 }
 
+function FundingStrip({ organization }: { organization: Organization }) {
+  const funding = organization.funding;
+  if (!funding) return null;
+  const empty = funding.prepaid && funding.availableBalance === 0;
+  const title = !funding.prepaid ? "Cuenta con pago automático"
+    : funding.availableBalance !== undefined ? `Saldo disponible: ${money(funding.availableBalance)}` : "Cuenta de prepago";
+  const detail = empty ? "Meta reporta $0 de saldo: los anuncios no se entregarán hasta que acredite tu recarga."
+    : funding.paymentMethod ?? "Método de pago configurado en Meta";
+  return <section className={`funding-strip ${empty ? "empty" : ""}`}>
+    <CircleDollarSign size={18}/>
+    <p><b>{title}</b><span suppressHydrationWarning>{detail} · Según Meta, actualizado {timeAgo(funding.syncedAt).toLowerCase()}</span></p>
+    {funding.spendCap > 0 && <div><strong>{money(funding.spendCap)}</strong><small>tope de gasto de la cuenta</small></div>}
+  </section>;
+}
+
 function DashboardView({ organization, campaigns, activities, alerts, actions, metrics, summary, onRun, running, onNavigate }: {
   organization: Organization; campaigns: Campaign[]; activities: SafeWorkspace["activities"]; alerts: SafeWorkspace["alerts"];
   actions: AgentAction[]; metrics: MetricPoint[]; summary: MonitoringSummary; onRun: () => void; running: boolean; onNavigate: (view: NavView) => void;
@@ -387,6 +402,7 @@ function DashboardView({ organization, campaigns, activities, alerts, actions, m
     </section>
 
     <ValueStrip summary={summary} limit={organization.monthlyLimit} />
+    <FundingStrip organization={organization} />
 
     <section className="dashboard-grid">
       <div className="panel performance-panel">

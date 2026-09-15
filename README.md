@@ -90,6 +90,8 @@ La integración solicita `ads_read`, `ads_management`, `business_management`, `p
 
 La versión de Graph API se configura mediante `META_GRAPH_VERSION`; el valor inicial es `v26.0` para evitar acoplarla al código.
 
+Cada sincronización también trae los fondos de cada cuenta publicitaria: si es de prepago, el método de pago tal como lo describe Meta, el saldo disponible, el gasto acumulado y el tope de gasto. El **Resumen** los muestra y avisa cuando una cuenta de prepago tiene $0, porque sus anuncios no se entregan. Una recarga en el Administrador de anuncios aparece en Pulso cuando Meta ya la acreditó y se vuelve a sincronizar.
+
 ## Funcionamiento del agente
 
 Cada ciclo sigue el mismo recorrido:
