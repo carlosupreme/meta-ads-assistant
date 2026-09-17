@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { executeAction } from "@/lib/agent-engine";
 import { aiStatus, reviewCampaignWithAi } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import {
   actionsFromAi, openCampaignAction, projectedMonthSpend, recordAction, resolveProposals, reviewCampaigns, storeCampaignReview,
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
           projectedMonthSpend: projectedMonthSpend(organization, workspace.campaigns, now),
         },
         recentActions: recent ? [{ type: recent.type, status: recent.status, fromBudget: recent.fromBudget, toBudget: recent.toBudget, reason: recent.reason }] : [],
-      });
+      }, requestTrace(request, session, organization));
 
       let resolved: AgentAction | undefined;
       if (review.action && !recent && campaign.status === "ACTIVE") {

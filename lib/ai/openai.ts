@@ -1,6 +1,9 @@
 import OpenAI from "openai";
+import type { Response as OpenAIResponse, ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
 import { z } from "zod";
 import type { AiAnalysis, AiCampaignContext, AiCampaignReview, AiSingleCampaignContext, AiStatus } from "./contracts";
+import type { AiFeature, AiTrace } from "./usage";
+import { recordAiCall } from "./usage-log.ts";
 
 const MODELS_TTL_MS = 10 * 60_000;
 
@@ -71,6 +74,21 @@ function openai(): OpenAI {
   return client;
 }
 
+/** Every model call goes through here, so each one is logged with who asked, from where, the exact response and its cost. */
+async function callModel<T>(feature: AiFeature, trace: AiTrace, params: ResponseCreateParamsNonStreaming, read: (response: OpenAIResponse) => T): Promise<T> {
+  const at = new Date();
+  let response: OpenAIResponse | undefined;
+  try {
+    response = await openai().responses.create(params);
+    const result = read(response);
+    await recordAiCall({ feature, trace, request: params, response, result, durationMs: Date.now() - at.getTime(), at });
+    return result;
+  } catch (error) {
+    await recordAiCall({ feature, trace, request: params, response, error, durationMs: Date.now() - at.getTime(), at });
+    throw error;
+  }
+}
+
 // Temporary: every workspace uses the same low-cost model. Add ids here to reopen the per-workspace choice.
 export const DEFAULT_AI_MODEL = "gpt-5-nano";
 const ALLOWED_AI_MODELS: readonly string[] = [DEFAULT_AI_MODEL];
@@ -123,16 +141,15 @@ function compactContext(context: AiCampaignContext): string {
   });
 }
 
-export async function analyzeCampaigns(model: string, context: AiCampaignContext): Promise<AiAnalysis> {
-  const response = await openai().responses.create({
+export async function analyzeCampaigns(model: string, context: AiCampaignContext, trace: AiTrace): Promise<AiAnalysis> {
+  return callModel("analyze_campaigns", trace, {
     model,
     store: false,
     reasoning: REASONING,
     max_output_tokens: 6000,
     instructions: ANALYST_INSTRUCTIONS,
     input: compactContext(context),
-  });
-  return analysisSchema.parse(readJsonOutput(response));
+  }, (response) => analysisSchema.parse(readJsonOutput(response)));
 }
 
 const CAMPAIGN_REVIEWER_INSTRUCTIONS = [
@@ -160,9 +177,9 @@ const campaignReviewSchema = z.object({
 const MAX_ADS_PER_CAMPAIGN = 30;
 
 /** A verdict and summary for one campaign, plus at most one change that the guardrails still validate. */
-export async function reviewCampaignWithAi(model: string, context: AiSingleCampaignContext): Promise<AiCampaignReview> {
+export async function reviewCampaignWithAi(model: string, context: AiSingleCampaignContext, trace: AiTrace): Promise<AiCampaignReview> {
   const { organization, campaign, account } = context;
-  const response = await openai().responses.create({
+  return callModel("campaign_review", trace, {
     model,
     store: false,
     reasoning: REASONING,
@@ -183,12 +200,11 @@ export async function reviewCampaignWithAi(model: string, context: AiSingleCampa
       anuncios: [...context.ads].sort((a, b) => b.spend - a.spend).slice(0, MAX_ADS_PER_CAMPAIGN).map((ad) => ({ id: ad.id, nombre: ad.name, estado: ad.status, gasto_mxn: ad.spend, impresiones: ad.impressions, ctr_pct: ad.ctr, frecuencia: ad.frequency, resultados: ad.results })),
       acciones_recientes: context.recentActions,
     }),
-  });
-  return campaignReviewSchema.parse(readJsonOutput(response));
+  }, (response) => campaignReviewSchema.parse(readJsonOutput(response)));
 }
 
-export async function askPulso(model: string, context: AiCampaignContext, question: string): Promise<string> {
-  const response = await openai().responses.create({
+export async function askPulso(model: string, context: AiCampaignContext, question: string, trace: AiTrace): Promise<string> {
+  return callModel("ask", trace, {
     model,
     store: false,
     reasoning: REASONING,
@@ -196,8 +212,7 @@ export async function askPulso(model: string, context: AiCampaignContext, questi
     max_output_tokens: 4000,
     instructions: ADVISOR_INSTRUCTIONS,
     input: `Contexto de la cuenta: ${compactContext(context)}\n\nPregunta del usuario: ${question}`,
-  });
-  return readOutputText(response);
+  }, readOutputText);
 }
 
 const COPYWRITER_INSTRUCTIONS = [
@@ -259,8 +274,8 @@ export interface CampaignPlanBrief {
 }
 
 /** Objective, audience, budget and tips for a new campaign, with the reasons a business owner can follow. */
-export async function planCampaign(model: string, brief: CampaignPlanBrief): Promise<AiCampaignPlan> {
-  const response = await openai().responses.create({
+export async function planCampaign(model: string, brief: CampaignPlanBrief, trace: AiTrace): Promise<AiCampaignPlan> {
+  return callModel("campaign_plan", trace, {
     model,
     store: false,
     reasoning: REASONING,
@@ -278,8 +293,7 @@ export async function planCampaign(model: string, brief: CampaignPlanBrief): Pro
       limite_mensual_mxn: brief.monthlyLimit,
       presupuesto_diario_maximo_mxn: Math.max(100, Math.floor(brief.monthlyLimit / 30)),
     }),
-  });
-  return planSchema.parse(readJsonOutput(response));
+  }, (response) => planSchema.parse(readJsonOutput(response)));
 }
 
 const AD_COPY_INSTRUCTIONS = [
@@ -304,7 +318,7 @@ export interface AdCopyBrief {
 }
 
 /** Three copy options for a new ad, reading its image when there is one. */
-export async function writeAdCopy(model: string, brief: AdCopyBrief): Promise<AdVariantCopy[]> {
+export async function writeAdCopy(model: string, brief: AdCopyBrief, trace: AiTrace): Promise<AdVariantCopy[]> {
   const text = JSON.stringify({
     negocio: brief.business,
     oferta: brief.offer,
@@ -314,7 +328,7 @@ export async function writeAdCopy(model: string, brief: AdCopyBrief): Promise<Ad
     publico: brief.audience,
     formato: brief.mediaKind === "video" ? "video (se adjunta un cuadro)" : brief.mediaKind === "image" ? "imagen" : "sin imagen todavía",
   });
-  const response = await openai().responses.create({
+  return callModel("ad_copy", trace, {
     model,
     store: false,
     reasoning: REASONING,
@@ -327,8 +341,7 @@ export async function writeAdCopy(model: string, brief: AdCopyBrief): Promise<Ad
         ...(brief.image ? [{ type: "input_image" as const, image_url: brief.image, detail: "low" as const }] : []),
       ],
     }],
-  });
-  return variantsSchema.parse(readJsonOutput(response)).variants;
+  }, (response) => variantsSchema.parse(readJsonOutput(response)).variants);
 }
 
 const LEAD_FORM_INSTRUCTIONS = [
@@ -356,16 +369,15 @@ const leadFormSchema = z.object({
 export type AiLeadForm = z.infer<typeof leadFormSchema>;
 
 /** Intro, qualifying questions and thank you message for a new instant form. */
-export async function writeLeadForm(model: string, brief: { business: string; offer: string; customer: string; details: string }): Promise<AiLeadForm> {
-  const response = await openai().responses.create({
+export async function writeLeadForm(model: string, brief: { business: string; offer: string; customer: string; details: string }, trace: AiTrace): Promise<AiLeadForm> {
+  return callModel("lead_form", trace, {
     model,
     store: false,
     reasoning: REASONING,
     max_output_tokens: 4000,
     instructions: LEAD_FORM_INSTRUCTIONS,
     input: JSON.stringify({ negocio: brief.business, oferta: brief.offer, cliente_ideal: brief.customer, detalles: brief.details }),
-  });
-  return leadFormSchema.parse(readJsonOutput(response));
+  }, (response) => leadFormSchema.parse(readJsonOutput(response)));
 }
 
 export interface AdVariantBrief {
@@ -386,8 +398,8 @@ export interface AdVariantCopy {
 }
 
 /** Fresh copy for a fatigued ad that keeps its offer; guardrails still validate lengths before publishing. */
-export async function writeAdVariants(model: string, brief: AdVariantBrief): Promise<AdVariantCopy[]> {
-  const response = await openai().responses.create({
+export async function writeAdVariants(model: string, brief: AdVariantBrief, trace: AiTrace): Promise<AdVariantCopy[]> {
+  return callModel("ad_variants", trace, {
     model,
     store: false,
     reasoning: REASONING,
@@ -400,6 +412,5 @@ export async function writeAdVariants(model: string, brief: AdVariantBrief): Pro
       anuncio_base: { titulo: brief.headline ?? "", texto: brief.primaryText ?? "" },
       rendimiento_7d: { ctr_pct: brief.ctr, frecuencia: brief.frequency, resultados: brief.results },
     }),
-  });
-  return variantsSchema.parse(readJsonOutput(response)).variants;
+  }, (response) => variantsSchema.parse(readJsonOutput(response)).variants);
 }

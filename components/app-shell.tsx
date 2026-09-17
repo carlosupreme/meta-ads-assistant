@@ -179,7 +179,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     setRunning(true);
     try {
       const response = await fetch("/api/agents/run", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: organization.id }),
+        method: "POST", headers: { "Content-Type": "application/json", "X-Pulso-View": "dashboard" }, body: JSON.stringify({ organizationId: organization.id }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
@@ -199,7 +199,7 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     stopReviews.current = false;
     try {
       const response = await fetch("/api/agents/run", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId: organizationIdAtStart }),
+        method: "POST", headers: { "Content-Type": "application/json", "X-Pulso-View": "agents" }, body: JSON.stringify({ organizationId: organizationIdAtStart }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);

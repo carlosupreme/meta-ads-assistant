@@ -251,6 +251,18 @@ Para activarlo:
 
 El cron semanal no reenvía un negocio si ya se envió en los últimos 6 días, y usa claves de idempotencia de Resend para que un reintento no duplique correos.
 
+## Registro de consumo de IA y backoffice
+
+Cada llamada a OpenAI pasa por `callModel` (`lib/ai/openai.ts`) y queda en la tabla `pulso_ai_logs` de Supabase (migración `202609170001_create_pulso_ai_logs.sql`):
+
+- **Quién y dónde**: cliente (espacio y correo), negocio, función (`analyze_campaigns`, `campaign_review`, `ask`, `ad_variants`, `campaign_plan`, `ad_copy`, `lead_form`), ruta de la API, página de la app (`dashboard`, `agents`, `campaigns`, `new-campaign`) o `monitor` para el cron.
+- **Consumo**: modelo, duración, tokens de entrada (y en caché), salida (y de razonamiento), costo estimado en USD con los precios de `lib/ai/usage.ts`.
+- **JSON completo** en `entry`: la solicitud enviada (las imágenes se reemplazan por su tipo y tamaño), la respuesta exacta de OpenAI, el resultado que usó Pulso y el error si falló (también se registran los errores de lectura, por ejemplo JSON inválido o respuesta cortada).
+
+Si el registro falla (por ejemplo, sin la migración aplicada), la función sigue funcionando y el error solo aparece en los logs del servidor. La tabla tiene RLS sin políticas: solo la clave secreta la lee. La vista `pulso_ai_usage_daily` suma el consumo por día de Ciudad de México.
+
+El **backoffice** vive en `backoffice/`: una app Next.js aparte, protegida con usuario y contraseña, que muestra consumo por cliente, negocio, función y página, cada llamada con su JSON y exportación a JSON. Se despliega como otro proyecto de Vercel con Root Directory `backoffice`; los pasos están en `backoffice/README.md`. Está excluida del `tsconfig`, ESLint y build de la app principal.
+
 ## Desplegar gratis en Vercel
 
 El plan Hobby de Vercel ejecuta Next.js completo (páginas, API, middleware y cron). Es para uso personal o no comercial; cuando cobres a clientes, cambia a Pro.

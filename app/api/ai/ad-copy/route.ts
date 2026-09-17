@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { aiStatus, writeAdCopy } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { readWorkspace } from "@/lib/store";
 
@@ -33,7 +34,7 @@ export async function POST(request: Request) {
   const ai = aiStatus(workspace.aiModel);
   if (!ai.configured || !ai.model) return NextResponse.json({ error: ai.reason ?? "OpenAI no está configurado." }, { status: 503 });
   try {
-    const variants = await writeAdCopy(ai.model, { business: organization.name, ...input });
+    const variants = await writeAdCopy(ai.model, { business: organization.name, ...input }, requestTrace(request, session, organization));
     return NextResponse.json({ variants });
   } catch (error) {
     console.error("Ad copy failed", error);

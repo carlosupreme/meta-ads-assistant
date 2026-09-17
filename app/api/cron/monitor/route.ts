@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAgentEngine } from "@/lib/agent-engine";
+import { cronTrace } from "@/lib/ai/trace";
 import { isCronAuthorized } from "@/lib/cron";
 import { syncMetaWorkspace } from "@/lib/meta";
 import { commitAgentRun } from "@/lib/optimizer";
@@ -16,7 +17,7 @@ async function monitorWorkspace(workspaceId: string) {
       const synced = await syncMetaWorkspace(workspace);
       workspace = await updateWorkspace(workspaceId, (current) => mergeSyncedWorkspace(current, synced));
     }
-    const run = await runAgentEngine(workspace);
+    const run = await runAgentEngine(workspace, cronTrace(workspaceId, workspace, "/api/cron/monitor"));
     await updateWorkspace(workspaceId, (current) => commitAgentRun(current, run, new Date()));
     return run;
   });

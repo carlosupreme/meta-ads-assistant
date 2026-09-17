@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { aiStatus, askPulso, buildAiContext } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { readWorkspace } from "@/lib/store";
 
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
       organization,
       workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id),
       workspace.ads.filter((ad) => ad.organizationId === organization.id),
-    ), parsed.data.question);
+    ), parsed.data.question, requestTrace(request, session, organization));
     return NextResponse.json({ answer });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "La IA no pudo responder." }, { status: 502 });

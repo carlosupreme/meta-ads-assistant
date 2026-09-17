@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { aiStatus, writeLeadForm } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { readWorkspace } from "@/lib/store";
 
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
   const ai = aiStatus(workspace.aiModel);
   if (!ai.configured || !ai.model) return NextResponse.json({ error: ai.reason ?? "OpenAI no está configurado." }, { status: 503 });
   try {
-    const form = await writeLeadForm(ai.model, { business: organization.name, offer: parsed.data.offer, customer: parsed.data.customer, details: parsed.data.details });
+    const form = await writeLeadForm(ai.model, { business: organization.name, offer: parsed.data.offer, customer: parsed.data.customer, details: parsed.data.details }, requestTrace(request, session, organization));
     return NextResponse.json({ form });
   } catch (error) {
     console.error("Lead form suggestion failed", error);

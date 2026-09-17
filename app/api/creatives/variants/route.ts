@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { aiStatus, writeAdVariants } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { readWorkspace } from "@/lib/store";
 
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
       ctr: ad.ctr,
       frequency: ad.frequency,
       results: ad.results,
-    });
+    }, requestTrace(request, session, organization));
     return NextResponse.json({ variants });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "OpenAI no pudo escribir las variantes." }, { status: 502 });

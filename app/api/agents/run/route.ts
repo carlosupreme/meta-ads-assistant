@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runAgentEngine } from "@/lib/agent-engine";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { commitAgentRun } from "@/lib/optimizer";
 import { AgentBusyError, updateWorkspace, withAgentLock } from "@/lib/store";
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Solicitud inválida" }, { status: 400 });
   try {
     const result = await withAgentLock(session.workspaceId, async (workspace) => {
-      const run = await runAgentEngine(workspace, parsed.data.organizationId);
+      const run = await runAgentEngine(workspace, requestTrace(request, session), parsed.data.organizationId);
       await updateWorkspace(session.workspaceId, (current) => commitAgentRun(current, run, new Date()));
       return run;
     });

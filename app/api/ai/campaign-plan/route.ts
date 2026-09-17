@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { aiStatus, planCampaign } from "@/lib/ai/openai";
+import { requestTrace } from "@/lib/ai/trace";
 import { requireApiSession } from "@/lib/auth";
 import { searchTargeting, type TargetingOption } from "@/lib/meta";
 import { readWorkspace } from "@/lib/store";
@@ -49,7 +50,7 @@ export async function POST(request: Request) {
       website: input.website,
       hasPixel: Boolean(organization.pixelId),
       monthlyLimit: organization.monthlyLimit,
-    });
+    }, requestTrace(request, session, organization));
 
     // Sales campaigns cannot be created without a website and a Pixel; recommend what can actually launch.
     const salesBlocked = plan.objective === "Ventas" && (!organization.pixelId || !input.website);

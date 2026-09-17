@@ -1,6 +1,7 @@
 import { createAdVariant, updateMetaObject } from "./meta";
 import type { AgentAction, AgentActivity, WorkspaceData } from "./types";
 import { aiStatus, analyzeCampaigns, buildAiContext, writeAdVariants } from "./ai/openai";
+import { forOrganization, type AiTrace } from "./ai/usage";
 import {
   actionsFromAi, buildVariantSpec, creativeRefreshTargets, planRuleActions, resolveProposals, reviewCampaigns, scaledAdSetBudget, summarizeRun,
   type AgentRunOutcome, type RunCheck,
@@ -14,7 +15,7 @@ export interface AgentRunResult extends AgentRunOutcome {
  * Plans with rules (and AI when configured), filters everything through the guardrails and executes
  * what the automation mode allows. It does not persist: commit the result with `commitAgentRun`.
  */
-export async function runAgentEngine(workspace: WorkspaceData, organizationId?: string, now = new Date()): Promise<AgentRunResult> {
+export async function runAgentEngine(workspace: WorkspaceData, trace: AiTrace, organizationId?: string, now = new Date()): Promise<AgentRunResult> {
   const organizations = organizationId
     ? workspace.organizations.filter((organization) => organization.id === organizationId)
     : workspace.organizations;
@@ -30,11 +31,12 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
     const campaigns = workspace.campaigns.filter((campaign) => campaign.organizationId === organization.id);
     if (!campaigns.length) continue;
     const proposals = planRuleActions(workspace, organization, now);
+    const organizationTrace = forOrganization(trace, organization);
 
     if (aiModel && campaigns.some((campaign) => campaign.status === "ACTIVE")) {
       try {
         const ads = workspace.ads.filter((ad) => ad.organizationId === organization.id);
-        const analysis = await analyzeCampaigns(aiModel, buildAiContext(organization, campaigns, ads, proposals));
+        const analysis = await analyzeCampaigns(aiModel, buildAiContext(organization, campaigns, ads, proposals), organizationTrace);
         insights.push(...analysis.recommendations.map((recommendation): AgentActivity => ({
           id: `ai-${globalThis.crypto.randomUUID()}`,
           organizationId: organization.id,
@@ -63,7 +65,7 @@ export async function runAgentEngine(workspace: WorkspaceData, organizationId?: 
             ctr: target.source.ctr,
             frequency: target.source.frequency,
             results: target.source.results,
-          });
+          }, organizationTrace);
           if (!variant) continue;
           proposals.push({
             id: `action-${globalThis.crypto.randomUUID()}`,
