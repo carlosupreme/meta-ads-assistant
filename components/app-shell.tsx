@@ -77,19 +77,31 @@ const money = (value: number, compact = false) => new Intl.NumberFormat("es-MX",
   style: "currency", currency: "MXN", maximumFractionDigits: 0, notation: compact ? "compact" : "standard",
 }).format(value);
 
-const navItems: Array<{ id: NavView; label: string; icon: typeof LayoutDashboard }> = [
-  { id: "dashboard", label: "Resumen", icon: LayoutDashboard },
-  { id: "campaigns", label: "Campañas", icon: Megaphone },
-  { id: "agents", label: "Agentes IA", icon: BrainCircuit },
-  { id: "creatives", label: "Creativos", icon: ImageIcon },
-  { id: "posts", label: "Publicaciones", icon: Newspaper },
-  { id: "alerts", label: "Alertas", icon: Bell },
-  { id: "reports", label: "Reportes", icon: FileText },
-];
-
-const lowerNav: Array<{ id: NavView; label: string; icon: typeof Settings }> = [
-  { id: "connections", label: "Conexiones", icon: Zap },
-  { id: "settings", label: "Configuración", icon: Settings },
+const navGroups: Array<{ label: string; items: Array<{ id: NavView; label: string; icon: typeof LayoutDashboard }> }> = [
+  {
+    label: "TU CUENTA",
+    items: [
+      { id: "dashboard", label: "Resumen", icon: LayoutDashboard },
+      { id: "campaigns", label: "Campañas", icon: Megaphone },
+      { id: "posts", label: "Publicaciones", icon: Newspaper },
+    ],
+  },
+  {
+    label: "INTELIGENCIA",
+    items: [
+      { id: "agents", label: "Agentes IA", icon: BrainCircuit },
+      { id: "creatives", label: "Creativos", icon: ImageIcon },
+      { id: "reports", label: "Reportes", icon: FileText },
+    ],
+  },
+  {
+    label: "AJUSTES",
+    items: [
+      { id: "alerts", label: "Alertas", icon: Bell },
+      { id: "connections", label: "Conexiones", icon: Zap },
+      { id: "settings", label: "Configuración", icon: Settings },
+    ],
+  },
 ];
 
 const viewTitles: Record<NavView, { eyebrow: string; title: string }> = {
@@ -410,14 +422,14 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
           </select>
         </label>}
         <nav>
-          <div className="side-label">NAVEGACIÓN</div>
-          {navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
-            <item.icon size={18} /><span>{item.label}</span>
-            {item.id === "alerts" && alerts.filter((alert) => !alert.read).length > 0 && <em>{alerts.filter((alert) => !alert.read).length}</em>}
-            {item.id === "agents" && pendingCount > 0 && <em title="Propuestas esperando aprobación">{pendingCount}</em>}
-          </button>)}
-          <div className="nav-divider" />
-          {lowerNav.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><item.icon size={18} /><span>{item.label}</span></button>)}
+          {navGroups.map((group) => <Fragment key={group.label}>
+            <div className="side-label">{group.label}</div>
+            {group.items.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
+              <item.icon size={18} /><span>{item.label}</span>
+              {item.id === "alerts" && alerts.filter((alert) => !alert.read).length > 0 && <em>{alerts.filter((alert) => !alert.read).length}</em>}
+              {item.id === "agents" && pendingCount > 0 && <em title="Propuestas esperando aprobación">{pendingCount}</em>}
+            </button>)}
+          </Fragment>)}
         </nav>
         <div className="agent-mini-card">
           <div className="agent-mini-head"><span className="live-dot" /><span>Agentes activos</span><b>6</b></div>
@@ -588,10 +600,10 @@ function PerformanceChart({ metrics }: { metrics: SafeWorkspace["metrics"][strin
   const area = (values: ReadonlyArray<readonly [number, number]>) => values.length ? `${line(values)} L${values.at(-1)?.[0]},${plot.top + chartHeight} L${values[0][0]},${plot.top + chartHeight} Z` : "";
   const levels = [0, .25, .5, .75, 1];
   return <svg className="performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Gráfica de ingresos e inversión">
-    <defs><linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#765cf6" stopOpacity=".28"/><stop offset="100%" stopColor="#765cf6" stopOpacity="0"/></linearGradient><linearGradient id="spendGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#20b486" stopOpacity=".16"/><stop offset="100%" stopColor="#20b486" stopOpacity="0"/></linearGradient></defs>
+    <defs><linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6366f1" stopOpacity=".26"/><stop offset="100%" stopColor="#6366f1" stopOpacity="0"/></linearGradient><linearGradient id="spendGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#34d399" stopOpacity=".18"/><stop offset="100%" stopColor="#34d399" stopOpacity="0"/></linearGradient></defs>
     {levels.map((level) => { const y = plot.top + chartHeight * (1 - level); return <g key={level}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke="#e8e9ef" strokeDasharray="4 5"/><text x={plot.left - 9} y={y + 3} textAnchor="end" fill="#9697a1" fontSize="11">${Math.round((roundMax * level) / 1000)}k</text></g>; })}
-    <path d={area(revenuePoints)} fill="url(#revenueGradient)"/><path d={area(spendPoints)} fill="url(#spendGradient)"/><path d={line(revenuePoints)} fill="none" stroke="#765cf6" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/><path d={line(spendPoints)} fill="none" stroke="#20b486" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
-    {revenuePoints.map(([x, y], index) => <circle key={`r-${index}`} cx={x} cy={y} r="2.4" fill="#fff" stroke="#765cf6" strokeWidth="1.5"/>)}
+    <path d={area(revenuePoints)} fill="url(#revenueGradient)"/><path d={area(spendPoints)} fill="url(#spendGradient)"/><path d={line(revenuePoints)} fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"/><path d={line(spendPoints)} fill="none" stroke="#34d399" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+    {revenuePoints.map(([x, y], index) => <circle key={`r-${index}`} cx={x} cy={y} r="2.4" fill="#fff" stroke="#6366f1" strokeWidth="1.5"/>)}
     {metrics.map((point, index) => { const x = plot.left + (index / Math.max(metrics.length - 1, 1)) * chartWidth; return <text key={point.date} x={x} y={height - 6} textAnchor="middle" fill="#8b8d98" fontSize="11">{point.date}</text>; })}
   </svg>;
 }
