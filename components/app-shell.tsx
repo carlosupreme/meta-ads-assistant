@@ -12,8 +12,12 @@ import type { Ad, AgentAction, AgentName, AudienceSpec, AutomationMode, Campaign
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, agentBriefs, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
+import {
+  adsManagerUrl, BID_STRATEGY_LABELS, BILLING_LABELS, DELIVERY_STATUS, DESTINATION_LABELS, formatSchedule, labelOr, OBJECTIVE_LABELS,
+  OPTIMIZATION_LABELS, PREVIEW_FORMATS, type PreviewFormat,
+} from "@/lib/campaign-detail";
 import { leadFormProblem, MAX_CUSTOM_QUESTIONS, parseOptions, type LeadFormInput } from "@/lib/lead-forms";
-import type { TargetingOption } from "@/lib/meta";
+import type { CampaignDetail, TargetingOption } from "@/lib/meta";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 import { DEFAULT_AUDIENCE, describeAudience } from "@/lib/targeting";
 import { ALL_PAGES, NO_PAGE, campaignsForPage, pageOptions, sumMetrics } from "@/lib/workspace";
@@ -558,7 +562,7 @@ function PanelHeader({ title, subtitle, action }: { title: string; subtitle: str
 type ControlRequest = (body: Record<string, unknown>) => Promise<boolean>;
 type AdCreatedHandler = (workspace: SafeWorkspace, message: string) => void;
 
-function CampaignTable({ campaigns, compact = false, onToggle, ads, pageNames, onControl, onAdCreated }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; pageNames?: Map<string, string>; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler }) {
+function CampaignTable({ campaigns, compact = false, onToggle, ads, pageNames, onControl, onAdCreated, onOpen }: { campaigns: Campaign[]; compact?: boolean; onToggle?: (campaign: Campaign) => void; ads?: Ad[]; pageNames?: Map<string, string>; onControl?: ControlRequest; onAdCreated?: AdCreatedHandler; onOpen?: (campaign: Campaign) => void }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   if (!campaigns.length) return <div className="empty-panel"><Megaphone size={24}/><b>Aún no hay campañas</b><span>Crea la primera con ayuda de los agentes.</span></div>;
   return <div className={`campaign-table ${compact ? "compact" : ""}`}>
@@ -570,7 +574,10 @@ function CampaignTable({ campaigns, compact = false, onToggle, ads, pageNames, o
         <div className={`campaign-row ${open ? "expanded" : ""}`}>
           <div className="campaign-name">
             {ads && <button className="expand-button" aria-expanded={open} title={open ? "Ocultar anuncios" : "Ver anuncios"} onClick={() => setExpanded(open ? null : campaign.id)}><ChevronRight size={15}/></button>}
-            <span className="campaign-logo"><Megaphone size={15}/></span><p><b>{campaign.name}</b><small>{pageNames && (campaign.pageIds?.length ?? 0) > 0 ? campaign.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ") : campaign.channel}</small></p>
+            <span className="campaign-logo"><Megaphone size={15}/></span>
+            {onOpen
+              ? <button className="campaign-open" title="Ver la campaña tal como está en Meta" onClick={() => onOpen(campaign)}><b>{campaign.name}</b><small>{pageNames && (campaign.pageIds?.length ?? 0) > 0 ? campaign.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ") : campaign.channel}</small></button>
+              : <p><b>{campaign.name}</b><small>{pageNames && (campaign.pageIds?.length ?? 0) > 0 ? campaign.pageIds?.map((id) => pageNames.get(id) ?? "Página sin acceso").join(" · ") : campaign.channel}</small></p>}
           </div>
           <div><span className={`status-badge ${campaign.status.toLowerCase()}`}><i />{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span></div>
           <div className="number-cell"><b>{money(campaign.spend)}</b><small>este mes</small></div>
@@ -724,6 +731,7 @@ function ActivityList({ activities }: { activities: SafeWorkspace["activities"] 
 function CampaignsView({ campaigns, ads, scoped, pages, onToggle, onControl, onAdCreated, onCreate }: { campaigns: Campaign[]; ads: Ad[]; scoped: boolean; pages: ManagedPage[]; onToggle: (campaign: Campaign) => void; onControl: ControlRequest; onAdCreated: AdCreatedHandler; onCreate: () => void }) {
   const [query, setQuery] = useState("");
   const [pageFilter, setPageFilter] = useState("all");
+  const [detail, setDetail] = useState<Campaign | null>(null);
   const pageNames = new Map(pages.map((page) => [page.id, page.name]));
   const withoutPage = campaigns.filter((campaign) => !campaign.pageIds?.length);
   // With a Page selected in the sidebar the list is already narrowed, so the local filter steps aside.
@@ -738,7 +746,8 @@ function CampaignsView({ campaigns, ads, scoped, pages, onToggle, onControl, onA
       <option value="all">Todas las páginas ({campaigns.length})</option>
       {pages.map((page) => <option key={page.id} value={page.id}>{page.name} ({campaigns.filter((campaign) => campaign.pageIds?.includes(page.id)).length})</option>)}
       {withoutPage.length > 0 && <option value="none">Sin página detectada ({withoutPage.length})</option>}
-    </select>}<button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} pageNames={pageNames} onToggle={onToggle} onControl={onControl} onAdCreated={onAdCreated}/></div>
+    </select>}<button className="secondary-button"><FileText size={15}/> Exportar</button></div><CampaignTable campaigns={filtered} ads={ads} pageNames={pageNames} onToggle={onToggle} onControl={onControl} onAdCreated={onAdCreated} onOpen={setDetail}/></div>
+    {detail && <CampaignDetailModal key={detail.id} campaign={detail} ads={ads.filter((ad) => ad.campaignId === detail.id)} onClose={() => setDetail(null)}/>}
   </div>;
 }
 
@@ -1126,6 +1135,9 @@ type MessagingApp = "WHATSAPP" | "MESSENGER";
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
+// Six previews are plenty to see the campaign; each one is its own Graph call.
+const MAX_PREVIEWS = 6;
+
 const OBJECTIVE_HINTS: Record<Organization["objective"], string> = {
   Ventas: "Compras en tu sitio",
   Prospectos: "Formularios instantáneos",
@@ -1199,6 +1211,191 @@ async function jpegDataUrl(blob: Blob, maxSide = 768): Promise<string> {
   canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return canvas.toDataURL("image/jpeg", 0.8);
+}
+
+type CampaignDetailResponse = { detail: CampaignDetail; pages: Record<string, string> };
+
+const formatCount = (value: number) => new Intl.NumberFormat("es-MX").format(Math.round(value));
+
+function DeliveryBadge({ status }: { status: string }) {
+  const state = DELIVERY_STATUS[status] ?? { label: status.replaceAll("_", " ").toLowerCase(), tone: "muted" };
+  return <span className={`delivery-badge ${state.tone}`}>{state.label}</span>;
+}
+
+function DetailFacts({ items, tight = false }: { items: Array<[string, React.ReactNode]>; tight?: boolean }) {
+  return <dl className={`detail-facts ${tight ? "tight" : ""}`}>{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
+}
+
+function ResultsBlock({ title, subtitle, totals }: { title: string; subtitle: string; totals: CampaignDetail["lifetime"] }) {
+  if (!totals) return <div className="results-block"><h4>{title}</h4><p className="field-note">Meta no reporta datos en este periodo.</p></div>;
+  const rows: Array<[string, React.ReactNode]> = [
+    ["Inversión", money(totals.spend)],
+    ["Resultados", formatCount(totals.results)],
+    ["Costo por resultado", totals.results ? money(totals.spend / totals.results) : "—"],
+    ["Ingresos atribuidos", money(totals.revenue)],
+    ["ROAS", totals.spend ? `${(totals.revenue / totals.spend).toFixed(2)}×` : "—"],
+    ["Personas alcanzadas", formatCount(totals.reach)],
+    ["Impresiones", formatCount(totals.impressions)],
+    ["Frecuencia", totals.frequency ? totals.frequency.toFixed(2) : "—"],
+    ["Clics", formatCount(totals.clicks)],
+    ["CTR", `${totals.ctr.toFixed(2)}%`],
+    ["Costo por clic", money(totals.cpc)],
+    ["CPM", money(totals.cpm)],
+  ];
+  return <div className="results-block"><h4>{title}</h4><small>{subtitle}</small><DetailFacts items={rows} tight/></div>;
+}
+
+/** The campaign as Meta has it: its ads rendered by Meta, its setup and its numbers. */
+function CampaignDetailModal({ campaign, ads, onClose }: { campaign: Campaign; ads: Ad[]; onClose: () => void }) {
+  const [tab, setTab] = useState<"preview" | "setup" | "results">("preview");
+  const [data, setData] = useState<CampaignDetailResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [format, setFormat] = useState<PreviewFormat>("MOBILE_FEED_STANDARD");
+  const [previews, setPreviews] = useState<Record<string, { url?: string; error?: string }>>({});
+  const requested = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/campaigns/${campaign.id}`, { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (response.ok) setData(result);
+        else setError(result.error || "No se pudo leer la campaña.");
+      })
+      .catch(() => { if (!cancelled) setError("No se pudo leer la campaña."); });
+    return () => { cancelled = true; };
+  }, [campaign.id]);
+
+  const detail = data?.detail;
+  const previewAds = (detail?.ads ?? []).slice(0, MAX_PREVIEWS);
+  const previewIds = previewAds.map((ad) => ad.id).join(",");
+
+  useEffect(() => {
+    if (tab !== "preview" || !previewIds) return;
+    let cancelled = false;
+    const pending = previewIds.split(",").filter((adId) => !requested.current.has(`${adId}:${format}`));
+    pending.forEach((adId) => requested.current.add(`${adId}:${format}`));
+    void Promise.all(pending.map(async (adId) => {
+      try {
+        const response = await fetch(`/api/ads/${adId}/preview?format=${format}`, { cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        setPreviews((current) => ({ ...current, [`${adId}:${format}`]: response.ok ? { url: result.url } : { error: result.error || "Meta no devolvió la vista previa." } }));
+      } catch {
+        if (!cancelled) setPreviews((current) => ({ ...current, [`${adId}:${format}`]: { error: "No se pudo cargar la vista previa." } }));
+      }
+    }));
+    return () => { cancelled = true; };
+  }, [tab, format, previewIds]);
+
+  const size = PREVIEW_FORMATS.find((item) => item.key === format) ?? PREVIEW_FORMATS[0];
+  const pageNames = Object.values(data?.pages ?? {});
+  const budgetLabel = detail?.dailyBudget
+    ? `${money(detail.dailyBudget)} al día`
+    : detail?.lifetimeBudget
+      ? `${money(detail.lifetimeBudget)} en total`
+      : "En los conjuntos de anuncios";
+
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal detail-modal">
+    <div className="modal-head">
+      <div>
+        <span>LA CAMPAÑA TAL CUAL ESTÁ EN META</span>
+        <h2>{campaign.name}</h2>
+        <p className="detail-subhead">
+          {detail ? <DeliveryBadge status={detail.effectiveStatus}/> : <span className={`status-badge ${campaign.status.toLowerCase()}`}><i/>{campaign.status === "ACTIVE" ? "Activa" : campaign.status === "PAUSED" ? "Pausada" : "Borrador"}</span>}
+          {detail?.objective && <span>{labelOr(OBJECTIVE_LABELS, detail.objective)}</span>}
+          {pageNames.length > 0 && <span>{pageNames.join(" · ")}</span>}
+        </p>
+      </div>
+      <button onClick={onClose} aria-label="Cerrar"><X size={19}/></button>
+    </div>
+
+    <div className="detail-tabs" role="tablist">
+      {([["preview", "Vista previa"], ["setup", "Configuración"], ["results", "Resultados"]] as const).map(([key, label]) => (
+        <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "selected" : ""} onClick={() => setTab(key)}>{label}</button>
+      ))}
+    </div>
+
+    <div className="modal-body">
+      {error && <p className="field-note warning">{error}</p>}
+      {!detail && !error && <p className="field-note"><LoaderCircle className="spin" size={14}/> Leyendo la campaña en Meta…</p>}
+
+      {detail && tab === "preview" && <div className="form-step">
+        <div className="choice-row wrap">{PREVIEW_FORMATS.map((item) => (
+          <button key={item.key} type="button" className={format === item.key ? "selected" : ""} onClick={() => setFormat(item.key)}>{item.label}</button>
+        ))}</div>
+        {previewAds.length === 0 && <p className="field-note">Esta campaña no tiene anuncios en Meta.</p>}
+        <div className="preview-grid">{previewAds.map((ad) => {
+          const preview = previews[`${ad.id}:${format}`];
+          return <figure className="preview-card" key={ad.id}>
+            <figcaption><b title={ad.name}>{ad.name}</b><DeliveryBadge status={ad.effectiveStatus}/></figcaption>
+            <div className="preview-frame" style={{ height: size.height }}>
+              {preview?.url
+                ? <iframe title={`Vista previa de ${ad.name}`} src={preview.url} width={size.width} height={size.height} sandbox="allow-scripts allow-same-origin allow-popups" loading="lazy"/>
+                : preview?.error
+                  ? <p className="field-note warning">{preview.error}</p>
+                  : <p className="field-note"><LoaderCircle className="spin" size={14}/> Cargando…</p>}
+            </div>
+            {(ad.headline || ad.primaryText) && <div className="preview-copy">{ad.headline && <b>{ad.headline}</b>}{ad.primaryText && <p>{ad.primaryText}</p>}</div>}
+            {ad.link && <a className="preview-link" href={ad.link} target="_blank" rel="noreferrer noopener">{ad.link}</a>}
+          </figure>;
+        })}</div>
+        {(detail.ads.length > MAX_PREVIEWS) && <p className="field-note">Se muestran los primeros {MAX_PREVIEWS} anuncios de {detail.ads.length}.</p>}
+        <p className="field-note">Las vistas previas las genera Meta en el momento y caducan a los pocos minutos.</p>
+      </div>}
+
+      {detail && tab === "setup" && <div className="form-step">
+        <DetailFacts items={[
+          ["Objetivo", labelOr(OBJECTIVE_LABELS, detail.objective)],
+          ["Entrega", <DeliveryBadge key="delivery" status={detail.effectiveStatus}/>],
+          ["Presupuesto", budgetLabel],
+          ["Restante del presupuesto", detail.budgetRemaining ? money(detail.budgetRemaining) : "—"],
+          ["Estrategia de puja", labelOr(BID_STRATEGY_LABELS, detail.bidStrategy)],
+          ["Programación", formatSchedule(detail.startTime, detail.stopTime)],
+          ["Categoría especial", detail.specialAdCategories.length ? detail.specialAdCategories.join(", ") : "Ninguna"],
+          ["Creada", formatSchedule(detail.createdTime, undefined).replace("Desde el ", "").replace(", sin fecha de fin", "")],
+          ["ID de campaña", detail.id],
+        ]}/>
+        <h3 className="detail-heading">Conjuntos de anuncios ({detail.adSets.length})</h3>
+        {detail.adSets.map((adSet) => <div className="adset-card" key={adSet.id}>
+          <div className="adset-head"><b>{adSet.name}</b><DeliveryBadge status={adSet.effectiveStatus}/></div>
+          <DetailFacts tight items={[
+            ["Presupuesto", adSet.dailyBudget ? `${money(adSet.dailyBudget)} al día` : adSet.lifetimeBudget ? `${money(adSet.lifetimeBudget)} en total` : "En la campaña"],
+            ["Optimiza para", labelOr(OPTIMIZATION_LABELS, adSet.optimizationGoal)],
+            ["Se cobra", labelOr(BILLING_LABELS, adSet.billingEvent)],
+            ["Destino", labelOr(DESTINATION_LABELS, adSet.destinationType)],
+            ["Programación", formatSchedule(adSet.startTime, adSet.endTime)],
+            ["Edad", adSet.targeting.ages],
+            ["Género", adSet.targeting.genders],
+            ["Ubicaciones de entrega", adSet.targeting.placements],
+            ...(adSet.pixelId ? [["Pixel", adSet.pixelId] as [string, React.ReactNode]] : []),
+            ...(adSet.leadFormId ? [["Formulario", adSet.leadFormId] as [string, React.ReactNode]] : []),
+          ]}/>
+          <div className="audience-chips">
+            {adSet.targeting.advantage && <span className="chip advantage">Audiencia Advantage+</span>}
+            {adSet.targeting.locations.map((place) => <span className="chip" key={place}>{place}</span>)}
+            {adSet.targeting.interests.map((interest) => <span className="chip interest" key={interest}>{interest}</span>)}
+            {adSet.targeting.exclusions.map((item) => <span className="chip excluded" key={item}>Excluye: {item}</span>)}
+          </div>
+        </div>)}
+      </div>}
+
+      {detail && tab === "results" && <div className="form-step">
+        <div className="results-grid">
+          <ResultsBlock title="Últimos 7 días" subtitle="Lo que Meta reporta de la última semana" totals={detail.last7d}/>
+          <ResultsBlock title="Desde que inició" subtitle="Acumulado de toda la campaña" totals={detail.lifetime}/>
+        </div>
+        <h3 className="detail-heading">Anuncios ({ads.length})</h3>
+        <AdList ads={ads}/>
+      </div>}
+    </div>
+
+    <div className="modal-footer">
+      <button className="secondary-button" onClick={onClose}>Cerrar</button>
+      {detail?.adAccountId && <a className="primary-button" href={adsManagerUrl(detail.adAccountId, detail.id)} target="_blank" rel="noreferrer noopener">Abrir en Meta <ChevronRight size={16}/></a>}
+    </div>
+  </div></div>;
 }
 
 const LEAD_FIELDS: Array<[keyof LeadFormInput["fields"], string]> = [["fullName", "Nombre completo"], ["email", "Correo"], ["phone", "Teléfono"], ["city", "Ciudad"]];

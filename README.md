@@ -187,6 +187,16 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 
 Los videos no pasan por Vercel (límite de 4.5 MB por petición): el navegador los sube a Supabase Storage (bucket privado `pulso-ad-media`, se crea solo) con una URL firmada (`POST /api/media/video-upload`), Meta los descarga con `file_url`, Pulso espera a que terminen de procesarse (hasta 150 s) y usa el cuadro capturado como portada. El archivo temporal se borra al terminar.
 
+## Ver la campaña tal cual
+
+En **Campañas**, el nombre de cada campaña abre su detalle leído en vivo de Meta (`GET /api/campaigns/<id>`), con tres pestañas:
+
+- **Vista previa**: el anuncio renderizado por Meta (`GET /api/ads/<id>/preview`) en feed móvil, feed de escritorio, Instagram, historias y Reels, con su título, texto y enlace. Se muestran hasta 6 anuncios; los enlaces de vista previa los genera Meta y caducan a los pocos minutos.
+- **Configuración**: objetivo, estado de entrega (incluye *En revisión*, *Rechazada* o *Falta información de pago*), presupuesto y saldo restante, estrategia de puja, fechas, categoría especial, y cada conjunto con su presupuesto, optimización, cobro, destino y público real: edad, género, ubicaciones con su radio, intereses, exclusiones, idioma, ubicaciones de entrega y si usa Advantage+.
+- **Resultados**: últimos 7 días y acumulado histórico con inversión, resultados, costo por resultado, ingresos, ROAS, alcance, impresiones, frecuencia, clics, CTR, costo por clic y CPM, más la lista de anuncios.
+
+El botón **Abrir en Meta** lleva a esa campaña en el Administrador de anuncios. Todo se lee en el momento, así que refleja cambios hechos fuera de Pulso sin esperar a la sincronización.
+
 ## Vista por página
 
 Además de la cuenta publicitaria, el menú lateral tiene un selector **Página** con las páginas que tienen campañas en esa cuenta (y las campañas sin página detectada). Al elegir una, el Dashboard (inversión, ingresos, ROAS, resultados y gráfica), Campañas y Agentes IA (tarjetas, revisión por campaña y el análisis campaña por campaña) muestran solo sus campañas. El límite mensual, los fondos y la proyección siguen siendo de toda la cuenta, porque así los cobra Meta. La gráfica por página suma las series diarias por campaña que guarda la sincronización (`campaignMetrics`), así que requiere sincronizar una vez después de actualizar. Nueva campaña preselecciona la página elegida.

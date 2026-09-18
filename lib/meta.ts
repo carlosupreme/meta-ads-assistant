@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { decryptSecret } from "./crypto";
+import { describeTargeting, type PreviewFormat, type TargetingSummary } from "./campaign-detail";
 import { buildLeadFormParams, type LeadFormInput } from "./lead-forms";
 import { adSetName, buildTargeting } from "./targeting";
 import type { AccountFunding, Ad, AdSetBudget, AudienceSpec, Campaign, ManagedPage, MetricPoint, Organization, TargetInterest, TargetLocation, WorkspaceData } from "./types";
@@ -438,6 +439,255 @@ export async function syncMetaWorkspace(workspace: WorkspaceData): Promise<Works
     metrics: actualMetrics,
     campaignMetrics,
   };
+}
+
+/** One campaign exactly as Meta has it: setup, ad sets with their audience, ads and results. */
+export interface CampaignDetail {
+  id: string;
+  name: string;
+  status: string;
+  effectiveStatus: string;
+  objective?: string;
+  buyingType?: string;
+  bidStrategy?: string;
+  specialAdCategories: string[];
+  dailyBudget: number;
+  lifetimeBudget: number;
+  budgetRemaining: number;
+  startTime?: string;
+  stopTime?: string;
+  createdTime?: string;
+  updatedTime?: string;
+  adAccountId: string;
+  adSets: CampaignDetailAdSet[];
+  ads: CampaignDetailAd[];
+  lifetime: CampaignInsightTotals | null;
+  last7d: CampaignInsightTotals | null;
+}
+
+export interface CampaignDetailAdSet {
+  id: string;
+  name: string;
+  status: string;
+  effectiveStatus: string;
+  dailyBudget: number;
+  lifetimeBudget: number;
+  billingEvent?: string;
+  optimizationGoal?: string;
+  bidStrategy?: string;
+  destinationType?: string;
+  startTime?: string;
+  endTime?: string;
+  targeting: TargetingSummary;
+  leadFormId?: string;
+  pixelId?: string;
+}
+
+export interface CampaignDetailAd {
+  id: string;
+  name: string;
+  status: string;
+  effectiveStatus: string;
+  adSetId: string;
+  headline?: string;
+  primaryText?: string;
+  imageUrl?: string;
+  videoId?: string;
+  callToAction?: string;
+  link?: string;
+  permalink?: string;
+}
+
+export interface CampaignInsightTotals {
+  spend: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  frequency: number;
+  results: number;
+  revenue: number;
+}
+
+interface MetaInsightRow {
+  spend?: string;
+  impressions?: string;
+  reach?: string;
+  clicks?: string;
+  ctr?: string;
+  cpc?: string;
+  cpm?: string;
+  frequency?: string;
+  actions?: ActionStats;
+  action_values?: ActionStats;
+}
+
+const INSIGHT_FIELDS = "spend,impressions,reach,clicks,ctr,cpc,cpm,frequency,actions,action_values";
+
+function insightTotals(row: MetaInsightRow | undefined): CampaignInsightTotals | null {
+  if (!row) return null;
+  return {
+    spend: Number(row.spend || 0),
+    impressions: Number(row.impressions || 0),
+    reach: Number(row.reach || 0),
+    clicks: Number(row.clicks || 0),
+    ctr: Number(row.ctr || 0),
+    cpc: Number(row.cpc || 0),
+    cpm: Number(row.cpm || 0),
+    frequency: Number(row.frequency || 0),
+    results: resultCount(row.actions),
+    revenue: purchaseValue(row.action_values),
+  };
+}
+
+interface MetaCampaignDetailRow {
+  id: string;
+  name: string;
+  status?: string;
+  effective_status?: string;
+  objective?: string;
+  buying_type?: string;
+  bid_strategy?: string;
+  special_ad_categories?: string[];
+  daily_budget?: string;
+  lifetime_budget?: string;
+  budget_remaining?: string;
+  start_time?: string;
+  stop_time?: string;
+  created_time?: string;
+  updated_time?: string;
+  account_id?: string;
+}
+
+interface MetaAdSetDetailRow {
+  id: string;
+  name: string;
+  status?: string;
+  effective_status?: string;
+  daily_budget?: string;
+  lifetime_budget?: string;
+  billing_event?: string;
+  optimization_goal?: string;
+  bid_strategy?: string;
+  destination_type?: string;
+  start_time?: string;
+  end_time?: string;
+  targeting?: unknown;
+  promoted_object?: { pixel_id?: string; page_id?: string; custom_event_type?: string; lead_gen_form_id?: string };
+}
+
+interface MetaAdDetailRow {
+  id: string;
+  name: string;
+  status?: string;
+  effective_status?: string;
+  adset_id: string;
+  creative?: {
+    title?: string;
+    body?: string;
+    image_url?: string;
+    video_id?: string;
+    call_to_action_type?: string;
+    link_url?: string;
+    instagram_permalink_url?: string;
+    object_story_spec?: {
+      link_data?: { message?: string; name?: string; link?: string; call_to_action?: { type?: string } };
+      video_data?: { message?: string; title?: string; call_to_action?: { type?: string; value?: { link?: string } } };
+    };
+  };
+}
+
+/** Everything Meta knows about one campaign, read live so the app never shows a stale setup. */
+export async function fetchCampaignDetail(encryptedToken: string, campaignId: string): Promise<CampaignDetail> {
+  const token = decryptSecret(encryptedToken);
+  const [campaign, adSetRows, adRows, lifetimeRows, weekRows] = await Promise.all([
+    graphGet<MetaCampaignDetailRow>(campaignId, token, {
+      fields: "id,name,status,effective_status,objective,buying_type,bid_strategy,special_ad_categories,daily_budget,lifetime_budget,budget_remaining,start_time,stop_time,created_time,updated_time,account_id",
+    }),
+    graphGetAll<MetaAdSetDetailRow>(`${campaignId}/adsets`, token, {
+      fields: "id,name,status,effective_status,daily_budget,lifetime_budget,billing_event,optimization_goal,bid_strategy,destination_type,start_time,end_time,targeting,promoted_object",
+      limit: "50",
+    }),
+    graphGetAll<MetaAdDetailRow>(`${campaignId}/ads`, token, {
+      fields: "id,name,status,effective_status,adset_id,creative{title,body,image_url,video_id,call_to_action_type,link_url,instagram_permalink_url,object_story_spec}",
+      limit: "50",
+    }),
+    graphGet<GraphResponse<MetaInsightRow>>(`${campaignId}/insights`, token, { fields: INSIGHT_FIELDS, date_preset: "maximum" }),
+    graphGet<GraphResponse<MetaInsightRow>>(`${campaignId}/insights`, token, { fields: INSIGHT_FIELDS, date_preset: "last_7d" }),
+  ]);
+
+  return {
+    id: campaign.id,
+    name: campaign.name,
+    status: campaign.status ?? "UNKNOWN",
+    effectiveStatus: campaign.effective_status ?? campaign.status ?? "UNKNOWN",
+    objective: campaign.objective,
+    buyingType: campaign.buying_type,
+    bidStrategy: campaign.bid_strategy,
+    specialAdCategories: campaign.special_ad_categories ?? [],
+    dailyBudget: Number(campaign.daily_budget || 0) / 100,
+    lifetimeBudget: Number(campaign.lifetime_budget || 0) / 100,
+    budgetRemaining: Number(campaign.budget_remaining || 0) / 100,
+    startTime: campaign.start_time,
+    stopTime: campaign.stop_time,
+    createdTime: campaign.created_time,
+    updatedTime: campaign.updated_time,
+    adAccountId: campaign.account_id ? `act_${campaign.account_id}` : "",
+    adSets: adSetRows.map((adSet) => ({
+      id: adSet.id,
+      name: adSet.name,
+      status: adSet.status ?? "UNKNOWN",
+      effectiveStatus: adSet.effective_status ?? adSet.status ?? "UNKNOWN",
+      dailyBudget: Number(adSet.daily_budget || 0) / 100,
+      lifetimeBudget: Number(adSet.lifetime_budget || 0) / 100,
+      billingEvent: adSet.billing_event,
+      optimizationGoal: adSet.optimization_goal,
+      bidStrategy: adSet.bid_strategy,
+      destinationType: adSet.destination_type,
+      startTime: adSet.start_time,
+      endTime: adSet.end_time,
+      targeting: describeTargeting(adSet.targeting),
+      leadFormId: adSet.promoted_object?.lead_gen_form_id,
+      pixelId: adSet.promoted_object?.pixel_id,
+    })),
+    ads: adRows.map((ad) => {
+      const story = ad.creative?.object_story_spec;
+      const link = story?.link_data;
+      const video = story?.video_data;
+      return {
+        id: ad.id,
+        name: ad.name,
+        status: ad.status ?? "UNKNOWN",
+        effectiveStatus: ad.effective_status ?? ad.status ?? "UNKNOWN",
+        adSetId: ad.adset_id,
+        headline: ad.creative?.title ?? link?.name ?? video?.title,
+        primaryText: ad.creative?.body ?? link?.message ?? video?.message,
+        imageUrl: ad.creative?.image_url,
+        videoId: ad.creative?.video_id,
+        callToAction: ad.creative?.call_to_action_type ?? link?.call_to_action?.type ?? video?.call_to_action?.type,
+        link: ad.creative?.link_url ?? link?.link ?? video?.call_to_action?.value?.link,
+        permalink: ad.creative?.instagram_permalink_url,
+      };
+    }),
+    lifetime: insightTotals(lifetimeRows.data?.[0]),
+    last7d: insightTotals(weekRows.data?.[0]),
+  };
+}
+
+/** The campaign an ad belongs to, used to check the ad is the workspace's before showing it. */
+export async function fetchAdCampaignId(encryptedToken: string, adId: string): Promise<string | undefined> {
+  const ad = await graphGet<{ campaign_id?: string }>(adId, decryptSecret(encryptedToken), { fields: "campaign_id" });
+  return ad.campaign_id;
+}
+
+/** Meta renders the ad itself; it answers with an <iframe> tag whose src the app shows at its own size. */
+export async function fetchAdPreview(encryptedToken: string, adId: string, format: PreviewFormat): Promise<string | null> {
+  const token = decryptSecret(encryptedToken);
+  const response = await graphGet<GraphResponse<{ body?: string }>>(`${adId}/previews`, token, { ad_format: format });
+  const source = response.data?.[0]?.body?.match(/src="([^"]+)"/);
+  return source ? source[1].replaceAll("&amp;", "&") : null;
 }
 
 export type MessagingApp = "WHATSAPP" | "MESSENGER";
