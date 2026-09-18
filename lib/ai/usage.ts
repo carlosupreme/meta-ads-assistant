@@ -1,7 +1,7 @@
 // Pure helpers for the OpenAI usage log: trace context, tokens, cost and the stored row. Type-only imports so it runs under `node --test`.
 import type { Organization } from "../types";
 
-export type AiFeature = "analyze_campaigns" | "campaign_review" | "ask" | "ad_variants" | "campaign_plan" | "ad_copy" | "lead_form";
+export type AiFeature = "analyze_campaigns" | "campaign_review" | "ask" | "ad_variants" | "campaign_plan" | "ad_copy" | "lead_form" | "posts_analysis";
 
 /** App view a call was made from; "monitor" is the scheduled run. */
 export type AiView = "dashboard" | "agents" | "campaigns" | "new-campaign" | "monitor";

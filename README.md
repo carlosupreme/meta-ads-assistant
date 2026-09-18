@@ -14,6 +14,7 @@ Web app para monitorear y optimizar Facebook e Instagram Ads con agentes autóno
 - Centro de alertas y registro de actividad de seis agentes.
 - IA generativa con OpenAI (`gpt-5-nano` para todos por ahora).
 - Creador guiado de campañas y conceptos creativos.
+- Análisis de publicaciones orgánicas de la página (sin pauta).
 - Endpoint de monitoreo programable en `/api/cron/monitor`.
 - Persistencia en Supabase/PostgreSQL con RLS y control de concurrencia.
 
@@ -186,6 +187,20 @@ Con datos demo, el creador simula el lanzamiento. Con Meta conectado, **siempre 
 4. **Confirmar** y publicar o crear en pausa.
 
 Los videos no pasan por Vercel (límite de 4.5 MB por petición): el navegador los sube a Supabase Storage (bucket privado `pulso-ad-media`, se crea solo) con una URL firmada (`POST /api/media/video-upload`), Meta los descarga con `file_url`, Pulso espera a que terminen de procesarse (hasta 150 s) y usa el cuadro capturado como portada. El archivo temporal se borra al terminar.
+
+## Publicaciones orgánicas
+
+**Publicaciones** analiza lo que subes a tu página sin pauta. **Actualizar publicaciones** (`POST /api/posts/sync`) trae los últimos 90 días (hasta 50 por página, hasta 5 páginas) con `published_posts`: texto, fecha y hora, formato (foto, video, reel, álbum, enlace o solo texto), reacciones, comentarios, compartidos y la imagen. Cuando Meta lo permite, añade alcance, impresiones, clics y el desglose de reacciones desde las métricas de la publicación.
+
+Con esos datos Pulso calcula, sin IA:
+
+- **Mejor día y mejor horario**: interacciones promedio por publicación, en hora de Ciudad de México, considerando solo bloques con suficientes publicaciones.
+- **Formato que mejor funciona** y cuántas publicaciones van sin foto ni video.
+- **Ritmo de publicación**, días de silencio y si el último mes gustó más o menos que el anterior.
+
+**Analizar con IA** (`POST /api/ai/posts`) suma la lectura del modelo: resumen, cuándo publicar, de 2 a 4 recomendaciones concretas e ideas de publicaciones, guardadas por página.
+
+Las métricas de alcance requieren el permiso `read_insights`, que ahora se pide al conectar Meta: **quien ya tenía Meta conectado debe volver a conectarlo** para concederlo. Sin ese permiso, todo lo demás funciona igual con reacciones, comentarios y compartidos. Meta retira métricas de publicaciones con cada versión; si alguna deja de existir, la sincronización continúa sin ella.
 
 ## Ver la campaña tal cual
 

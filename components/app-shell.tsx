@@ -6,9 +6,12 @@ import {
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, CircleGauge, Eye, Facebook,
   Copy, FileText, Gauge, Image as ImageIcon, Instagram, LayoutDashboard, Lightbulb, Link2, LoaderCircle, LogOut, Megaphone,
   MessageCircle, MoreHorizontal, Pause, Play, Plus, RefreshCcw, Rocket, Search, Settings,
-  Send, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
+  Heart, Newspaper, RefreshCw, Send, Share2, ShieldCheck, SlidersHorizontal, Sparkles, Target, TrendingUp, UserRound, WandSparkles, X, Zap,
 } from "lucide-react";
-import type { Ad, AgentAction, AgentName, AudienceSpec, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization, TargetLocation } from "@/lib/types";
+import type {
+  Ad, AgentAction, AgentName, AudienceSpec, AutomationMode, Campaign, CampaignReview, CampaignVerdict, ManagedPage, MetricPoint, NavView, Organization,
+  PagePost, PostsAnalysis, TargetLocation,
+} from "@/lib/types";
 import { MODE_LABELS } from "@/lib/types";
 import type { AiStatus } from "@/lib/ai/contracts";
 import { accountHealth, agentBriefs, describeAction, lastStatusChanges, monitoringSummary, projectedMonthSpend, targetRoas, type MonitoringSummary } from "@/lib/optimizer";
@@ -18,6 +21,7 @@ import {
 } from "@/lib/campaign-detail";
 import { leadFormProblem, MAX_CUSTOM_QUESTIONS, parseOptions, type LeadFormInput } from "@/lib/lead-forms";
 import type { CampaignDetail, TargetingOption } from "@/lib/meta";
+import { byFormat, byTimeBlock, byWeekday, FORMAT_LABELS, postFindings, summarizePosts, topPosts, type PostBucket } from "@/lib/posts";
 import type { SafeWorkspace } from "@/lib/safe-workspace";
 import { DEFAULT_AUDIENCE, describeAudience } from "@/lib/targeting";
 import { ALL_PAGES, NO_PAGE, campaignsForPage, pageOptions, sumMetrics } from "@/lib/workspace";
@@ -78,6 +82,7 @@ const navItems: Array<{ id: NavView; label: string; icon: typeof LayoutDashboard
   { id: "campaigns", label: "Campañas", icon: Megaphone },
   { id: "agents", label: "Agentes IA", icon: BrainCircuit },
   { id: "creatives", label: "Creativos", icon: ImageIcon },
+  { id: "posts", label: "Publicaciones", icon: Newspaper },
   { id: "alerts", label: "Alertas", icon: Bell },
   { id: "reports", label: "Reportes", icon: FileText },
 ];
@@ -92,6 +97,7 @@ const viewTitles: Record<NavView, { eyebrow: string; title: string }> = {
   campaigns: { eyebrow: "RENDIMIENTO", title: "Campañas" },
   agents: { eyebrow: "AUTOMATIZACIÓN", title: "Agentes IA" },
   creatives: { eyebrow: "LABORATORIO", title: "Creativos" },
+  posts: { eyebrow: "CONTENIDO ORGÁNICO", title: "Publicaciones" },
   alerts: { eyebrow: "MONITOREO", title: "Alertas" },
   reports: { eyebrow: "CLIENTES", title: "Reportes" },
   connections: { eyebrow: "INTEGRACIONES", title: "Conexiones" },
@@ -121,6 +127,8 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
   const [aiModels, setAiModels] = useState<string[]>([]);
   // Besides the ad account, the view can narrow to the campaigns of one Page.
   const [pageScope, setPageScope] = useState<string>(ALL_PAGES);
+  const [syncingPosts, setSyncingPosts] = useState(false);
+  const [analyzingPosts, setAnalyzingPosts] = useState(false);
   const organization = data.organizations.find((item) => item.id === organizationId) || data.organizations[0];
   const campaigns = data.campaigns.filter((item) => item.organizationId === organization?.id);
   const activities = data.activities.filter((item) => item.organizationId === organization?.id);
@@ -248,6 +256,37 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     }
   }
 
+  /** Brings the Page's organic posts (no ads) into the workspace. */
+  async function syncPosts(pageId?: string) {
+    setSyncingPosts(true);
+    try {
+      const response = await fetch("/api/posts/sync", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pageId ? { pageId } : {}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error);
+      if (result.workspace) setData(result.workspace);
+      setToast(result.message || "Publicaciones actualizadas.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "No se pudieron traer las publicaciones.");
+    } finally { setSyncingPosts(false); }
+  }
+
+  async function analyzePagePosts(pageId: string) {
+    setAnalyzingPosts(true);
+    try {
+      const response = await fetch("/api/ai/posts", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Pulso-View": "posts" }, body: JSON.stringify({ pageId }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error);
+      if (result.workspace) setData(result.workspace);
+      setToast("Análisis de publicaciones listo.");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "La IA no pudo analizar tus publicaciones.");
+    } finally { setAnalyzingPosts(false); }
+  }
+
   async function syncMeta() {
     setSyncing(true);
     try {
@@ -333,6 +372,12 @@ export function AppShell({ initialData, account }: { initialData: SafeWorkspace;
     campaigns: <CampaignsView campaigns={scopedCampaigns} ads={scopedAds} scoped={scoped} pages={data.pages ?? []} onToggle={toggleCampaign} onControl={control} onAdCreated={(workspace, message) => { setData(workspace); setToast(message); }} onCreate={() => setCampaignModal(true)} />,
     agents: <AgentsView organization={organization} campaigns={scopedCampaigns} ads={scopedAds} activities={activities} actions={scopedActions} reviews={scopedReview} pages={data.pages ?? []} decidingId={decidingId} onDecide={decideAction} running={running} onRun={analyzeEachCampaign} progress={reviewProgress} failures={reviewFailures} onStop={() => { stopReviews.current = true; }} onMode={() => setModeModal(true)} aiStatus={aiStatus} />,
     creatives: <CreativesView creatives={creatives} onCreate={() => setCampaignModal(true)} />,
+    posts: <PostsView
+      posts={scoped ? (data.posts ?? []).filter((post) => post.pageId === pageScope) : data.posts ?? []}
+      pages={scoped ? (data.pages ?? []).filter((page) => page.id === pageScope) : data.pages ?? []}
+      analyses={data.postsAnalysis} syncedAt={data.postsSyncedAt} syncing={syncingPosts} analyzing={analyzingPosts}
+      connected={data.metaConnection.status === "connected"} aiReady={Boolean(aiStatus?.configured)}
+      onSync={syncPosts} onAnalyze={analyzePagePosts} />,
     alerts: <AlertsView alerts={alerts} onRead={readAlert} />,
     reports: <ReportsView key={organization.id} organization={organization} branding={data.branding} setToast={setToast} onSaved={refreshWorkspace} />,
     connections: <ConnectionsView data={data} syncing={syncing} onSync={syncMeta} setToast={setToast} />,
@@ -1211,6 +1256,105 @@ async function jpegDataUrl(blob: Blob, maxSide = 768): Promise<string> {
   canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return canvas.toDataURL("image/jpeg", 0.8);
+}
+
+function BarList({ title, subtitle, buckets }: { title: string; subtitle: string; buckets: PostBucket[] }) {
+  const max = Math.max(...buckets.map((bucket) => bucket.average), 1);
+  return <div className="panel bar-panel">
+    <PanelHeader title={title} subtitle={subtitle}/>
+    {buckets.length ? <div className="bar-list">{buckets.map((bucket) => <div className="bar-row" key={bucket.key}>
+      <span className="bar-label">{bucket.label}</span>
+      <span className="bar-track"><i style={{ width: `${Math.max(2, (bucket.average / max) * 100)}%` }}/></span>
+      <span className="bar-value"><b>{Math.round(bucket.average)}</b><small>{bucket.posts} {bucket.posts === 1 ? "publicación" : "publicaciones"}</small></span>
+    </div>)}</div> : <div className="empty-panel"><Newspaper size={22}/><b>Sin datos todavía</b></div>}
+  </div>;
+}
+
+function PostsView({ posts, pages, analyses, syncedAt, syncing, analyzing, connected, aiReady, onSync, onAnalyze }: {
+  posts: PagePost[]; pages: ManagedPage[]; analyses?: Record<string, PostsAnalysis>; syncedAt?: string; syncing: boolean; analyzing: boolean;
+  connected: boolean; aiReady: boolean; onSync: (pageId?: string) => void; onAnalyze: (pageId: string) => void;
+}) {
+  const withPosts = pages.filter((page) => posts.some((post) => post.pageId === page.id));
+  const [pageId, setPageId] = useState(withPosts[0]?.id ?? pages[0]?.id ?? "");
+  const pagePosts = posts.filter((post) => post.pageId === pageId);
+  const stats = summarizePosts(pagePosts);
+  const findings = postFindings(pagePosts, new Date());
+  const analysis = analyses?.[pageId];
+  const top = topPosts(pagePosts, 6);
+
+  return <div className="page-stack">
+    <div className="page-intro">
+      <div><h2>Tus publicaciones sin pauta</h2><p>Lo que subes a tu página: cuándo publicas, qué formato usas y cómo responde la gente.</p></div>
+      <div className="intro-actions">
+        {pages.length > 1 && <select className="page-filter" aria-label="Página" value={pageId} onChange={(event) => setPageId(event.target.value)}>
+          {pages.map((page) => <option key={page.id} value={page.id}>{page.name}{posts.some((post) => post.pageId === page.id) ? "" : " (sin traer)"}</option>)}
+        </select>}
+        <button className="secondary-button" onClick={() => onSync(pageId || undefined)} disabled={syncing || !connected}>{syncing ? <LoaderCircle className="spin" size={15}/> : <RefreshCw size={15}/>} Actualizar publicaciones</button>
+        {aiReady && <button className="primary-button" onClick={() => onAnalyze(pageId)} disabled={analyzing || pagePosts.length < 3}>{analyzing ? <LoaderCircle className="spin" size={15}/> : <Sparkles size={15}/>} Analizar con IA</button>}
+      </div>
+    </div>
+
+    {!connected && <p className="field-note warning">Conecta Meta en Conexiones para traer tus publicaciones.</p>}
+    {connected && !pagePosts.length && <div className="panel"><div className="empty-panel"><Newspaper size={24}/><b>Aún no traemos tus publicaciones</b><span>Usa «Actualizar publicaciones» para leer los últimos 90 días de tu página.</span></div></div>}
+
+    {pagePosts.length > 0 && <>
+      <section className="summary-strip">
+        <div><span>Publicaciones</span><b>{pagePosts.length}</b></div>
+        <div><span>Interacciones</span><b>{formatCount(stats.engagement)}</b></div>
+        <div><span>Promedio por publicación</span><b>{Math.round(stats.averageEngagement)}</b></div>
+        <div><span>Reacciones · comentarios · compartidos</span><b>{formatCount(stats.reactions)} · {formatCount(stats.comments)} · {formatCount(stats.shares)}</b></div>
+        {stats.reach > 0 && <div><span>Alcance</span><b>{formatCount(stats.reach)}</b></div>}
+      </section>
+      <p className="field-note" suppressHydrationWarning>{syncedAt ? `Publicaciones actualizadas ${timeAgo(syncedAt).toLowerCase()}.` : ""}{stats.reach === 0 ? " Meta no está devolviendo alcance de esta página; el análisis usa reacciones, comentarios y compartidos." : ""}</p>
+
+      <div className="panel">
+        <PanelHeader title="Qué dicen tus publicaciones" subtitle="Hallazgos calculados con tus propios números"/>
+        <div className="finding-list">{findings.map((finding) => <div className={`finding ${finding.kind}`} key={finding.title}>
+          {finding.kind === "warn" ? <AlertCircle size={16}/> : finding.kind === "good" ? <TrendingUp size={16}/> : <Lightbulb size={16}/>}
+          <div><b>{finding.title}</b><p>{finding.detail}</p></div>
+        </div>)}</div>
+      </div>
+
+      <div className="bars-grid">
+        <BarList title="Mejor día para publicar" subtitle="Interacciones promedio por publicación" buckets={byWeekday(pagePosts)}/>
+        <BarList title="Mejor horario" subtitle="Hora de Ciudad de México" buckets={byTimeBlock(pagePosts)}/>
+        <BarList title="Formato que mejor funciona" subtitle="Foto, video, enlace o solo texto" buckets={byFormat(pagePosts)}/>
+      </div>
+
+      {aiReady && <div className="panel">
+        <PanelHeader title="Lectura de Pulso IA" subtitle={analysis ? `Analizado ${timeAgo(analysis.at).toLowerCase()}` : "Pide un análisis cuando quieras"} action={analysis ? <button className="text-button" onClick={() => onAnalyze(pageId)} disabled={analyzing}>Volver a analizar</button> : undefined}/>
+        {analysis ? <div className="posts-analysis">
+          <h3>{analysis.headline}</h3>
+          <p>{analysis.summary}</p>
+          {analysis.bestTime && <p className="best-time"><CalendarDays size={15}/> {analysis.bestTime}</p>}
+          <div className="recommendation-list">{analysis.recommendations.map((item) => <div key={item.title}><b>{item.title}</b><p>{item.detail}</p><em>{item.impact}</em></div>)}</div>
+          {analysis.ideas.length > 0 && <div className="idea-list"><b>Ideas para publicar</b><ul>{analysis.ideas.map((idea) => <li key={idea}>{idea}</li>)}</ul></div>}
+        </div> : <div className="empty-panel"><Sparkles size={22}/><b>Sin análisis todavía</b><span>La IA lee tus publicaciones y te dice qué repetir y qué cambiar.</span></div>}
+      </div>}
+
+      <div className="panel">
+        <PanelHeader title="Publicaciones" subtitle={`Las ${top.length} con más interacciones de ${pagePosts.length}`}/>
+        <div className="post-grid">{top.map((post) => <article className="post-card" key={post.id}>
+          {post.imageUrl
+            // Meta serves these from its CDN with signed URLs; next/image would need every host allowlisted.
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img src={post.imageUrl} alt="" loading="lazy"/>
+            : <div className="post-thumb"><Newspaper size={20}/></div>}
+          <div className="post-body">
+            <div className="post-meta"><span className="format-badge">{FORMAT_LABELS[post.format]}</span><small suppressHydrationWarning>{timeAgo(post.createdAt)}</small></div>
+            <p>{post.message ? post.message.slice(0, 180) : "Publicación sin texto"}</p>
+            <div className="post-stats">
+              <span title="Reacciones"><Heart size={13}/> {formatCount(post.reactions)}</span>
+              <span title="Comentarios"><MessageCircle size={13}/> {formatCount(post.comments)}</span>
+              <span title="Compartidos"><Share2 size={13}/> {formatCount(post.shares)}</span>
+              {post.reach !== undefined && <span title="Alcance"><Eye size={13}/> {formatCount(post.reach)}</span>}
+            </div>
+            {post.permalink && <a href={post.permalink} target="_blank" rel="noreferrer noopener">Ver en Facebook <ChevronRight size={13}/></a>}
+          </div>
+        </article>)}</div>
+      </div>
+    </>}
+  </div>;
 }
 
 type CampaignDetailResponse = { detail: CampaignDetail; pages: Record<string, string> };

@@ -105,6 +105,7 @@ export function clearDemoData(workspace: WorkspaceData): WorkspaceData {
     budgetChanges: [],
     campaignReviews: {},
     campaignMetrics: {},
+    posts: [],
   };
 }
 

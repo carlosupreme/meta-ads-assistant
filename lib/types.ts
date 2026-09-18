@@ -5,6 +5,7 @@ export type NavView =
   | "campaigns"
   | "agents"
   | "creatives"
+  | "posts"
   | "alerts"
   | "reports"
   | "connections"
@@ -303,6 +304,38 @@ export interface Creative {
   palette: string[];
 }
 
+export type PostFormat = "photo" | "video" | "reel" | "album" | "link" | "status" | "other";
+
+/** An organic post published on a Page: no ad money behind it. */
+export interface PagePost {
+  id: string;
+  pageId: string;
+  message?: string;
+  /** ISO time Meta published it. */
+  createdAt: string;
+  permalink?: string;
+  imageUrl?: string;
+  format: PostFormat;
+  reactions: number;
+  comments: number;
+  shares: number;
+  /** Only when the Page grants insights; organic reach is not always available. */
+  reach?: number;
+  impressions?: number;
+  clicks?: number;
+  videoViews?: number;
+  reactionTypes?: Record<string, number>;
+}
+
+export interface PostsAnalysis {
+  at: string;
+  headline: string;
+  summary: string;
+  bestTime?: string;
+  recommendations: Array<{ title: string; detail: string; impact: string }>;
+  ideas: string[];
+}
+
 export interface WorkspaceData {
   user: { name: string; email: string };
   metaConnection: {
@@ -325,6 +358,11 @@ export interface WorkspaceData {
   budgetChanges: BudgetChange[];
   /** Per business id, the last weeks of monitoring activity. */
   monitoring?: Record<string, MonitoringDay[]>;
+  /** Organic posts of the connected Pages, with when they were synced. */
+  posts?: PagePost[];
+  postsSyncedAt?: string;
+  /** Per Page id, the latest AI reading of its organic posts. */
+  postsAnalysis?: Record<string, PostsAnalysis>;
   /** Daily spend and revenue per campaign id, so a Page's series can be added from its campaigns. */
   campaignMetrics?: Record<string, MetricPoint[]>;
   /** Per business id, the per-campaign review of the latest analysis. */

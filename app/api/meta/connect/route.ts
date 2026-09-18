@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("state", state);
   authorize.searchParams.set("response_type", "code");
-  authorize.searchParams.set("scope", "ads_read,ads_management,business_management,pages_show_list,pages_read_engagement,pages_manage_ads,instagram_basic");
+  authorize.searchParams.set("scope", "ads_read,ads_management,business_management,pages_show_list,pages_read_engagement,pages_manage_ads,instagram_basic,read_insights");
   const response = NextResponse.redirect(authorize);
   response.cookies.set("meta_oauth_state", state, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 600, path: "/" });
   return response;

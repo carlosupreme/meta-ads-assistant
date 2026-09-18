@@ -380,6 +380,69 @@ export async function writeLeadForm(model: string, brief: { business: string; of
   }, (response) => leadFormSchema.parse(readJsonOutput(response)));
 }
 
+const POSTS_INSTRUCTIONS = [
+  "Eres estratega de redes sociales para negocios mexicanos. Analiza SOLO las publicaciones orgánicas (sin pauta) de una página de Facebook con los datos entregados.",
+  "headline resume en una frase cómo le va a la página. summary explica en 2 a 4 frases qué está funcionando y qué no, usando los números entregados (interacciones promedio, mejor día, mejor horario, formatos).",
+  "bestTime dice cuándo publicar, por ejemplo 'martes y jueves por la tarde', solo si los datos lo sostienen; si no hay suficientes publicaciones, dilo.",
+  "recommendations son 2 a 4 cambios concretos para las próximas semanas (frecuencia, horario, formato, tipo de contenido, llamado a la acción), cada uno con impact en una frase corta.",
+  "ideas son 2 a 4 ideas de publicaciones específicas para este negocio, inspiradas en lo que ya funcionó. No inventes métricas, promociones ni datos que no estén.",
+  "Español de México, claro y sin jerga. Devuelve JSON estricto sin Markdown: {headline,summary,bestTime,recommendations:[{title,detail,impact}],ideas}.",
+].join(" ");
+
+const postsAnalysisSchema = z.object({
+  headline: z.string().trim().min(3).max(140),
+  summary: z.string().trim().min(12).max(700),
+  bestTime: z.string().trim().max(160).nullish(),
+  recommendations: z.array(z.object({
+    title: z.string().trim().min(3).max(120),
+    detail: z.string().trim().min(8).max(420),
+    impact: z.string().trim().min(2).max(120),
+  })).min(1).max(5),
+  ideas: z.array(z.string().trim().min(4).max(240)).max(5).default([]),
+});
+
+export type AiPostsAnalysis = z.infer<typeof postsAnalysisSchema>;
+
+export interface PostsBrief {
+  page: string;
+  business: string;
+  days: number;
+  stats: { posts: number; reactions: number; comments: number; shares: number; averageEngagement: number; reach: number; engagementRate: number | null };
+  weekdays: Array<{ label: string; posts: number; average: number }>;
+  blocks: Array<{ label: string; posts: number; average: number }>;
+  formats: Array<{ label: string; posts: number; average: number }>;
+  top: Array<{ text: string; format: string; publishedAt: string; reactions: number; comments: number; shares: number; reach?: number }>;
+}
+
+/** What is working in a Page's organic posts and what to publish next. */
+export async function analyzePosts(model: string, brief: PostsBrief, trace: AiTrace): Promise<AiPostsAnalysis> {
+  return callModel("posts_analysis", trace, {
+    model,
+    store: false,
+    reasoning: REASONING,
+    max_output_tokens: 5000,
+    instructions: POSTS_INSTRUCTIONS,
+    input: JSON.stringify({
+      negocio: brief.business,
+      pagina: brief.page,
+      periodo_dias: brief.days,
+      totales: {
+        publicaciones: brief.stats.posts,
+        reacciones: brief.stats.reactions,
+        comentarios: brief.stats.comments,
+        compartidos: brief.stats.shares,
+        interacciones_promedio: Math.round(brief.stats.averageEngagement),
+        alcance: brief.stats.reach,
+        tasa_interaccion: brief.stats.engagementRate,
+      },
+      por_dia: brief.weekdays,
+      por_horario: brief.blocks,
+      por_formato: brief.formats,
+      mejores_publicaciones: brief.top,
+    }),
+  }, (response) => postsAnalysisSchema.parse(readJsonOutput(response)));
+}
+
 export interface AdVariantBrief {
   business: string;
   objective: string;

@@ -3,7 +3,9 @@ import { decryptSecret } from "./crypto";
 import { describeTargeting, type PreviewFormat, type TargetingSummary } from "./campaign-detail";
 import { buildLeadFormParams, type LeadFormInput } from "./lead-forms";
 import { adSetName, buildTargeting } from "./targeting";
-import type { AccountFunding, Ad, AdSetBudget, AudienceSpec, Campaign, ManagedPage, MetricPoint, Organization, TargetInterest, TargetLocation, WorkspaceData } from "./types";
+import type {
+  AccountFunding, Ad, AdSetBudget, AudienceSpec, Campaign, ManagedPage, MetricPoint, Organization, PagePost, PostFormat, TargetInterest, TargetLocation, WorkspaceData,
+} from "./types";
 import { campaignPageIds, defaultPageFor, mergePages, pageIdFromCreative, parseAvailableBalance } from "./workspace";
 
 const version = process.env.META_GRAPH_VERSION || "v26.0";
@@ -688,6 +690,95 @@ export async function fetchAdPreview(encryptedToken: string, adId: string, forma
   const response = await graphGet<GraphResponse<{ body?: string }>>(`${adId}/previews`, token, { ad_format: format });
   const source = response.data?.[0]?.body?.match(/src="([^"]+)"/);
   return source ? source[1].replaceAll("&amp;", "&") : null;
+}
+
+const POST_FIELDS = "id,message,created_time,permalink_url,full_picture,status_type,shares,attachments{media_type,type},reactions.summary(true).limit(0),comments.summary(true).limit(0)";
+
+// Meta keeps retiring post metrics; ask for all of them, then for the safest one, and give up without failing the sync.
+const POST_INSIGHT_METRICS = ["post_impressions", "post_impressions_unique", "post_clicks", "post_reactions_by_type_total"];
+const POST_INSIGHT_FALLBACK = ["post_clicks"];
+const INSIGHT_BATCH = 20;
+
+interface MetaPagePost {
+  id: string;
+  message?: string;
+  created_time: string;
+  permalink_url?: string;
+  full_picture?: string;
+  status_type?: string;
+  shares?: { count?: number };
+  attachments?: { data?: Array<{ media_type?: string; type?: string }> };
+  reactions?: { summary?: { total_count?: number } };
+  comments?: { summary?: { total_count?: number } };
+}
+
+type MetaPostInsights = Record<string, { insights?: { data?: Array<{ name: string; values?: Array<{ value: unknown }> }> } }>;
+
+function postFormat(post: MetaPagePost): PostFormat {
+  const attachment = post.attachments?.data?.[0];
+  const kind = `${attachment?.media_type ?? ""} ${attachment?.type ?? ""} ${post.status_type ?? ""}`.toLowerCase();
+  if (kind.includes("reel")) return "reel";
+  if (kind.includes("video")) return "video";
+  if (kind.includes("album") || kind.includes("multi")) return "album";
+  if (kind.includes("photo") || kind.includes("image")) return "photo";
+  if (kind.includes("link") || kind.includes("share")) return "link";
+  if (kind.includes("status") || kind.includes("note")) return "status";
+  return post.full_picture ? "photo" : "other";
+}
+
+function readInsights(rows: MetaPostInsights, postId: string): Partial<PagePost> {
+  const values = new Map((rows[postId]?.insights?.data ?? []).map((metric) => [metric.name, metric.values?.[0]?.value]));
+  const number = (name: string) => (typeof values.get(name) === "number" ? (values.get(name) as number) : undefined);
+  const reactionTypes = values.get("post_reactions_by_type_total");
+  return {
+    impressions: number("post_impressions"),
+    reach: number("post_impressions_unique"),
+    clicks: number("post_clicks"),
+    reactionTypes: reactionTypes && typeof reactionTypes === "object" ? reactionTypes as Record<string, number> : undefined,
+  };
+}
+
+async function fetchPostInsights(postIds: string[], pageToken: string): Promise<MetaPostInsights> {
+  const rows: MetaPostInsights = {};
+  for (let start = 0; start < postIds.length; start += INSIGHT_BATCH) {
+    const ids = postIds.slice(start, start + INSIGHT_BATCH).join(",");
+    for (const metrics of [POST_INSIGHT_METRICS, POST_INSIGHT_FALLBACK]) {
+      try {
+        Object.assign(rows, await graphGet<MetaPostInsights>("", pageToken, { ids, fields: `insights.metric(${metrics.join(",")})` }));
+        break;
+      } catch (error) {
+        console.error("Post insights unavailable", error instanceof Error ? error.message : error);
+      }
+    }
+  }
+  return rows;
+}
+
+/** Organic posts of a Page with their reactions, comments, shares and, when Meta allows it, reach and clicks. */
+export async function fetchPagePosts(encryptedToken: string, pageId: string, options: { limit?: number; sinceDays?: number } = {}): Promise<PagePost[]> {
+  const limit = Math.min(options.limit ?? 50, 100);
+  const pageToken = await pageAccessToken(decryptSecret(encryptedToken), pageId);
+  const since = Math.floor((Date.now() - (options.sinceDays ?? 90) * 86_400_000) / 1000);
+  const rows = await graphGetAll<MetaPagePost>(`${pageId}/published_posts`, pageToken, {
+    fields: POST_FIELDS,
+    since: String(since),
+    limit: String(limit),
+  });
+  const posts = rows.slice(0, limit).map((post): PagePost => ({
+    id: post.id,
+    pageId,
+    message: post.message,
+    createdAt: post.created_time,
+    permalink: post.permalink_url,
+    imageUrl: post.full_picture,
+    format: postFormat(post),
+    reactions: post.reactions?.summary?.total_count ?? 0,
+    comments: post.comments?.summary?.total_count ?? 0,
+    shares: post.shares?.count ?? 0,
+  }));
+  if (!posts.length) return posts;
+  const insights = await fetchPostInsights(posts.map((post) => post.id), pageToken);
+  return posts.map((post) => ({ ...post, ...readInsights(insights, post.id) }));
 }
 
 export type MessagingApp = "WHATSAPP" | "MESSENGER";

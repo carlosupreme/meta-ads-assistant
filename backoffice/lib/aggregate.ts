@@ -215,6 +215,7 @@ export const FEATURE_LABELS: Record<string, string> = {
   campaign_plan: "Plan de campaña",
   ad_copy: "Copy de anuncio",
   lead_form: "Formulario instantáneo",
+  posts_analysis: "Análisis de publicaciones",
 };
 
 export const VIEW_LABELS: Record<string, string> = {
